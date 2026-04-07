@@ -3,11 +3,7 @@ import { format, differenceInDays, parseISO, isValid } from 'date-fns';
 
 // ── API ──────────────────────────────────────────────────────────────────────
 
-const API_URL =
-  'https://script.google.com/macros/s/AKfycbzu8zSSmcPeuMAxUdDylahx7UuNBmMXWYd8W1wCVptdR0oUVLEIrYJiz37TRW_qPk2kQA/exec';
-
-let dataCache = null;
-let cacheTimestamp = 0;
+let dataCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000;
 
 function fetchWithTimeout(url, options = {}, timeoutMs = 60000) {
@@ -16,20 +12,35 @@ function fetchWithTimeout(url, options = {}, timeoutMs = 60000) {
   return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
 }
 
-export async function fetchShipmentData() {
+export async function fetchShipmentData(options = {}) {
+  const {
+    tab = 'dashboard',
+    filters = {},
+    forceRefresh = false,
+  } = options;
+
+  const query = new URLSearchParams({
+    action: 'shipments',
+    tab,
+  });
+  if (filters.platform) query.set('platform', filters.platform);
+  if (filters.courier) query.set('courier', filters.courier);
+  if (filters.zone) query.set('zone', filters.zone);
+  if (filters.city) query.set('city', filters.city);
+  if (filters.month) query.set('month', filters.month);
+  if (filters.dateFrom) query.set('dateFrom', filters.dateFrom);
+  if (filters.dateTo) query.set('dateTo', filters.dateTo);
+  if (forceRefresh) query.set('refresh', '1');
+
+  const cacheKey = query.toString();
   const now = Date.now();
-  if (dataCache && now - cacheTimestamp < CACHE_TTL) return dataCache;
+  const cached = dataCache.get(cacheKey);
+  if (!forceRefresh && cached && now - cached.ts < CACHE_TTL) {
+    return cached.data;
+  }
 
-  const extractRows = (json) => {
-    if (Array.isArray(json)) return json;
-    if (json && Array.isArray(json.data)) return json.data;
-    return json;
-  };
-
-  // Try proxy first (avoids CORS), then direct
   const attempts = [
-    () => fetchWithTimeout('/api', { redirect: 'follow' }),
-    () => fetchWithTimeout(API_URL, { redirect: 'follow', mode: 'cors' }),
+    () => fetchWithTimeout(`/api?${query.toString()}`, { redirect: 'follow' }),
   ];
 
   let lastErr;
@@ -38,9 +49,8 @@ export async function fetchShipmentData() {
       const res = await attempt();
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
-      const rows = extractRows(json);
-      dataCache = rows;
-      cacheTimestamp = now;
+      const rows = Array.isArray(json?.data) ? json.data : (Array.isArray(json) ? json : []);
+      dataCache.set(cacheKey, { ts: now, data: rows });
       return rows;
     } catch (err) {
       lastErr = err;
@@ -48,6 +58,32 @@ export async function fetchShipmentData() {
     }
   }
   throw lastErr || new Error('All fetch attempts failed');
+}
+
+export async function searchShipments(query, options = {}) {
+  const { limit = 100, forceRefresh = false } = options;
+  const params = new URLSearchParams({
+    action: 'search',
+    q: query || '',
+    limit: String(limit),
+  });
+  if (forceRefresh) params.set('refresh', '1');
+
+  const res = await fetchWithTimeout(`/api?${params.toString()}`, { redirect: 'follow' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function fetchSearchSuggestions(query, options = {}) {
+  const { limit = 8 } = options;
+  const params = new URLSearchParams({
+    action: 'suggest',
+    q: query || '',
+    limit: String(limit),
+  });
+  const res = await fetchWithTimeout(`/api?${params.toString()}`, { redirect: 'follow' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
 }
 
 // ── Fuzzy Status Matching ────────────────────────────────────────────────────

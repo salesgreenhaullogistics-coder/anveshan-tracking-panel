@@ -1,9 +1,9 @@
 /**
- * Netlify Serverless Function — API proxy for Google Apps Script
- * Handles CORS + redirect-following so the browser doesn't have to.
+ * Netlify Serverless Function - API proxy + query engine for logistics data.
  */
 
 import https from 'https';
+import { handleShipmentApiRequest } from '../../api/shipmentEngine.mjs';
 
 const APPS_SCRIPT_URL =
   'https://script.google.com/macros/s/AKfycbzu8zSSmcPeuMAxUdDylahx7UuNBmMXWYd8W1wCVptdR0oUVLEIrYJiz37TRW_qPk2kQA/exec';
@@ -23,21 +23,56 @@ function fetchFollowRedirects(url, maxRedirects = 5) {
   });
 }
 
-export default async (req, context) => {
+let cachedRawBody = null;
+let cachedRawTs = 0;
+const RAW_CACHE_TTL = 3 * 60 * 1000;
+
+async function fetchRawRows(forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && cachedRawBody && now - cachedRawTs < RAW_CACHE_TTL) {
+    const parsed = JSON.parse(cachedRawBody);
+    return Array.isArray(parsed) ? parsed : parsed?.data || [];
+  }
+
+  const body = await fetchFollowRedirects(APPS_SCRIPT_URL);
+  cachedRawBody = body;
+  cachedRawTs = Date.now();
+
+  const parsed = JSON.parse(body);
+  return Array.isArray(parsed) ? parsed : parsed?.data || [];
+}
+
+export default async (req) => {
   try {
-    const body = await fetchFollowRedirects(APPS_SCRIPT_URL);
-    return new Response(body, {
+    const fullUrl = new URL(req.url);
+    const forceRefresh = fullUrl.searchParams.get('refresh') === '1';
+
+    const result = await handleShipmentApiRequest(fullUrl, () => fetchRawRows(forceRefresh));
+    if (!result.ok) {
+      return new Response(JSON.stringify(result.body), {
+        status: result.status || 400,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        },
+      });
+    }
+
+    return new Response(JSON.stringify(result.body), {
       status: 200,
       headers: {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'public, max-age=60, s-maxage=180',
+        'Cache-Control': 'public, max-age=30, s-maxage=120',
       },
     });
   } catch (err) {
-    return new Response(JSON.stringify({ error: err.message }), {
+    return new Response(JSON.stringify({ error: err.message || 'Request failed' }), {
       status: 502,
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      },
     });
   }
 };

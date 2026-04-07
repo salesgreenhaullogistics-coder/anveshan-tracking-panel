@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import https from 'https';
+import { handleShipmentApiRequest } from './api/shipmentEngine.mjs';
 
 const APPS_SCRIPT_URL =
   'https://script.google.com/macros/s/AKfycbzu8zSSmcPeuMAxUdDylahx7UuNBmMXWYd8W1wCVptdR0oUVLEIrYJiz37TRW_qPk2kQA/exec';
@@ -24,61 +25,56 @@ function fetchFollowRedirects(url, maxRedirects = 5) {
 }
 
 function apiProxyPlugin() {
-  let cachedBody = null;
-  let cacheTime = 0;
-  const CACHE_TTL = 3 * 60 * 1000; // 3 min server-side cache
-  let inFlight = null;
+  let kpiCache = null;
+  let kpiCacheTime = 0;
+  let kpiInFlight = null;
+
+  let shipmentRawCache = null;
+  let shipmentRawCacheTime = 0;
+  let shipmentInFlight = null;
+
+  const CACHE_TTL = 3 * 60 * 1000;
+
+  async function getRawRows(forceRefresh = false) {
+    const now = Date.now();
+    if (!forceRefresh && shipmentRawCache && now - shipmentRawCacheTime < CACHE_TTL) {
+      const parsed = JSON.parse(shipmentRawCache);
+      return Array.isArray(parsed) ? parsed : parsed?.data || [];
+    }
+
+    if (!shipmentInFlight) shipmentInFlight = fetchFollowRedirects(APPS_SCRIPT_URL);
+    const body = await shipmentInFlight;
+    shipmentInFlight = null;
+
+    shipmentRawCache = body;
+    shipmentRawCacheTime = Date.now();
+
+    const parsed = JSON.parse(body);
+    return Array.isArray(parsed) ? parsed : parsed?.data || [];
+  }
 
   return {
     name: 'api-proxy',
     configureServer(server) {
-      // KPI endpoint — must be registered BEFORE /api to avoid being caught by the shipment proxy
-      let kpiCache = null;
-      let kpiCacheTime = 0;
-      let kpiInFlight = null;
       server.middlewares.use('/api/kpi', async (_req, res) => {
         try {
           const now = Date.now();
           if (kpiCache && now - kpiCacheTime < CACHE_TTL) {
-            res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=60' });
-            res.end(kpiCache);
-            return;
-          }
-          if (!kpiInFlight) kpiInFlight = fetchFollowRedirects(KPI_APPS_SCRIPT_URL);
-          const body = await kpiInFlight;
-          kpiInFlight = null;
-          kpiCache = body;
-          kpiCacheTime = Date.now();
-          res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=60' });
-          res.end(body);
-        } catch (err) {
-          kpiInFlight = null;
-          res.writeHead(502, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: err.message }));
-        }
-      });
-
-      server.middlewares.use('/api', async (_req, res) => {
-        try {
-          const now = Date.now();
-          if (cachedBody && now - cacheTime < CACHE_TTL) {
             res.writeHead(200, {
               'Content-Type': 'application/json',
               'Access-Control-Allow-Origin': '*',
               'Cache-Control': 'public, max-age=60',
             });
-            res.end(cachedBody);
+            res.end(kpiCache);
             return;
           }
 
-          // Deduplicate concurrent requests
-          if (!inFlight) {
-            inFlight = fetchFollowRedirects(APPS_SCRIPT_URL);
-          }
-          const body = await inFlight;
-          inFlight = null;
-          cachedBody = body;
-          cacheTime = Date.now();
+          if (!kpiInFlight) kpiInFlight = fetchFollowRedirects(KPI_APPS_SCRIPT_URL);
+          const body = await kpiInFlight;
+          kpiInFlight = null;
+
+          kpiCache = body;
+          kpiCacheTime = Date.now();
 
           res.writeHead(200, {
             'Content-Type': 'application/json',
@@ -87,7 +83,32 @@ function apiProxyPlugin() {
           });
           res.end(body);
         } catch (err) {
-          inFlight = null;
+          kpiInFlight = null;
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+
+      server.middlewares.use('/api', async (req, res) => {
+        try {
+          const fullUrl = new URL(req.url || '', 'http://localhost');
+          const forceRefresh = fullUrl.searchParams.get('refresh') === '1';
+          const result = await handleShipmentApiRequest(fullUrl, () => getRawRows(forceRefresh));
+
+          if (!result.ok) {
+            res.writeHead(result.status || 400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(result.body));
+            return;
+          }
+
+          res.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'Cache-Control': 'public, max-age=30',
+          });
+          res.end(JSON.stringify(result.body));
+        } catch (err) {
+          shipmentInFlight = null;
           res.writeHead(502, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: err.message }));
         }
@@ -99,8 +120,8 @@ function apiProxyPlugin() {
 export default defineConfig({
   plugins: [react(), apiProxyPlugin()],
   server: {
-    host: true,          // bind to 0.0.0.0 → accessible on LAN via your IP
+    host: true,
     port: 5173,
-    allowedHosts: true,  // allow all hostnames (tunnel, LAN IP, etc.)
+    allowedHosts: true,
   },
 });

@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React from 'react';
 import Sidebar from './components/Sidebar';
 import Filters from './components/Filters';
+import GlobalSearch from './components/GlobalSearch';
 import { useData } from './context/DataContext';
 import Dashboard from './pages/Dashboard';
 import InTransit from './pages/InTransit';
@@ -38,8 +39,7 @@ const TAB_TITLES = {
 };
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('dashboard');
-  const { loading, error, refreshData, lastFetched, data } = useData();
+  const { loading, error, refreshData, lastFetched, data, activeTab, setActiveTab } = useData();
 
   const PageComponent = PAGE_MAP[activeTab] || Dashboard;
 
@@ -47,8 +47,8 @@ export default function App() {
     <div className="flex min-h-screen bg-slate-50">
       <Sidebar activeTab={activeTab} onTabChange={setActiveTab} onRefresh={refreshData} loading={loading} />
       <main className="flex-1 ml-56 transition-all duration-300">
-        <header className="sticky top-0 z-20 bg-white/70 backdrop-blur-xl border-b border-gray-100/50 px-5 py-2.5 flex items-center justify-between">
-          <div className="flex items-center gap-3">
+        <header className="sticky top-0 z-20 bg-white/70 backdrop-blur-xl border-b border-gray-100/50 px-5 py-2.5 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
             <h2 className="text-sm font-bold text-gray-900">{TAB_TITLES[activeTab]}</h2>
             {lastFetched && (
               <div className="flex items-center gap-1.5 px-2 py-0.5 bg-gray-50 rounded-md">
@@ -59,12 +59,15 @@ export default function App() {
               </div>
             )}
           </div>
-          {loading && (
-            <div className="flex items-center gap-1.5 text-primary-600 bg-primary-50 px-2.5 py-1 rounded-lg">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              <span className="text-[10px] font-medium">Syncing...</span>
-            </div>
-          )}
+          <div className="flex items-center gap-3">
+            <GlobalSearch />
+            {loading && (
+              <div className="flex items-center gap-1.5 text-primary-600 bg-primary-50 px-2.5 py-1 rounded-lg">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span className="text-[10px] font-medium">Syncing...</span>
+              </div>
+            )}
+          </div>
         </header>
 
         <div className="p-4 space-y-3">

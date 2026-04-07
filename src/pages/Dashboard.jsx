@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useData } from '../context/DataContext';
 import KPICard from '../components/KPICard';
 import { BarChart, LineChart, PieChart, DoughnutChart } from '../components/Charts';
@@ -39,41 +39,86 @@ function isKnownPlatform(p) {
 const MABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 export default function Dashboard() {
-  const { data } = useData();
+  const { data, fetchScopedData, filters } = useData();
   const [view, setView] = useState('Overview');
   const [drillDown, setDrillDown] = useState(null);
   const [expandedPlatform, setExpandedPlatform] = useState(null);
+  const [viewData, setViewData] = useState([]);
+  const [viewLoading, setViewLoading] = useState(false);
+  const [viewError, setViewError] = useState('');
+
+  const viewToTabMap = {
+    Overview: 'dashboard',
+    'In-Transit': 'intransit',
+    Appointment: 'appointment',
+    'Aged PO': 'aged-pos',
+    'RTO Analysis': 'return',
+  };
+
+  useEffect(() => {
+    let active = true;
+    const mappedTab = viewToTabMap[view] || 'dashboard';
+
+    if (mappedTab === 'dashboard') {
+      setViewData(data);
+      setViewError('');
+      setViewLoading(false);
+      return () => { active = false; };
+    }
+
+    setViewLoading(true);
+    setViewError('');
+    setViewData([]);
+    fetchScopedData(mappedTab)
+      .then((rows) => {
+        if (!active) return;
+        setViewData(rows);
+      })
+      .catch((err) => {
+        if (!active) return;
+        setViewError(err.message || `Failed to load ${view} data`);
+        setViewData([]);
+      })
+      .finally(() => {
+        if (!active) return;
+        setViewLoading(false);
+      });
+
+    return () => { active = false; };
+  }, [view, data, fetchScopedData, filters]);
+
+  const scopedData = view === 'Overview' ? data : viewData;
 
   const stats = useMemo(() => {
-    const total = data.length;
-    const inTransit = data.filter((r) => isInTransit(r.status)).length;
-    const ofd = data.filter((r) => isOFD(r.status)).length;
-    const delivered = data.filter((r) => isDelivered(r.status) || isPartialDelivered(r.status)).length;
-    const rto = data.filter((r) => isRTO(r.status)).length;
-    const rtoDelivered = data.filter((r) => isRTODelivered(r.status)).length;
-    const lost = data.filter((r) => isLost(r.status)).length;
-    const withAppointment = data.filter((r) => safeParseDate(r.appointmentDate)).length;
+    const total = scopedData.length;
+    const inTransit = scopedData.filter((r) => isInTransit(r.status)).length;
+    const ofd = scopedData.filter((r) => isOFD(r.status)).length;
+    const delivered = scopedData.filter((r) => isDelivered(r.status) || isPartialDelivered(r.status)).length;
+    const rto = scopedData.filter((r) => isRTO(r.status)).length;
+    const rtoDelivered = scopedData.filter((r) => isRTODelivered(r.status)).length;
+    const lost = scopedData.filter((r) => isLost(r.status)).length;
+    const withAppointment = scopedData.filter((r) => safeParseDate(r.appointmentDate)).length;
     const withoutAppointment = total - withAppointment;
     const deliveryPercent = percent(delivered, total);
     const rtoPercent = percent(rto, total);
-    const podCount = data.filter((r) => r.pod && r.pod.toLowerCase() !== '' && r.pod !== '-').length;
+    const podCount = scopedData.filter((r) => r.pod && r.pod.toLowerCase() !== '' && r.pod !== '-').length;
     const podPercent = percent(podCount, delivered || 1);
-    const totalCost = data.reduce((sum, r) => sum + (parseFloat(r.logisticsCost) || 0), 0);
+    const totalCost = scopedData.reduce((sum, r) => sum + (parseFloat(r.logisticsCost) || 0), 0);
 
-    const tatVals = data
+    const tatVals = scopedData
       .filter((r) => safeParseDate(r.bookingDate) && safeParseDate(r.deliveryDate))
       .map((r) => daysBetween(r.bookingDate, r.deliveryDate))
       .filter((d) => d !== null && d >= 0);
     const avgTAT = tatVals.length ? Math.round((tatVals.reduce((a, b) => a + b, 0) / tatVals.length) * 10) / 10 : 0;
 
     const ageBuckets = { '0-3 Days': 0, '4-7 Days': 0, '8-15 Days': 0, '15+ Days': 0 };
-    data.forEach((r) => {
+    scopedData.forEach((r) => {
       const bd = safeParseDate(r.bookingDate);
       if (bd) { const age = Math.floor((new Date() - bd) / 86400000); const b = getAgeBucket(age); if (ageBuckets[b] !== undefined) ageBuckets[b]++; }
     });
 
     /* Platform stats — only known platforms */
-    const knownData = data.filter((r) => isKnownPlatform(r.platform));
+    const knownData = scopedData.filter((r) => isKnownPlatform(r.platform));
     const platformGroups = groupBy(knownData, 'platform');
     const platformStats = Object.entries(platformGroups)
       .map(([platform, rows]) => {
@@ -105,7 +150,7 @@ export default function Dashboard() {
       .map(([zone, rows]) => ({ zone, total: rows.length, delivered: rows.filter((r) => isDelivered(r.status) || isPartialDelivered(r.status)).length }));
 
     /* Monthly trend — chronological sort */
-    const monthGroups = groupBy(data, 'month');
+    const monthGroups = groupBy(scopedData, 'month');
     const monthStats = Object.entries(monthGroups)
       .filter(([m]) => m && m.includes("'"))
       .map(([month, rows]) => ({
@@ -124,7 +169,7 @@ export default function Dashboard() {
       .sort((a, b) => b.total - a.total);
 
     return { total, inTransit, ofd, delivered, rto, rtoDelivered, lost, withAppointment, withoutAppointment, deliveryPercent, rtoPercent, podCount, podPercent, totalCost, avgTAT, ageBuckets, platformStats, zoneStats, monthStats, courierStats };
-  }, [data]);
+  }, [scopedData]);
 
   const openDrill = (title, rows) => setDrillDown({ title, rows });
   const closeDrill = () => setDrillDown(null);
@@ -153,20 +198,31 @@ export default function Dashboard() {
         {VIEWS.map((v) => (<button key={v} onClick={() => setView(v)} className={`tab-btn ${view === v ? 'tab-btn-active' : 'tab-btn-inactive'}`}>{v}</button>))}
       </div>
 
+      {view !== 'Overview' && viewLoading && (
+        <div className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-[11px] text-blue-700">
+          Loading backend-scoped data for <strong>{view}</strong>...
+        </div>
+      )}
+      {view !== 'Overview' && viewError && (
+        <div className="rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-[11px] text-red-700">
+          {viewError}
+        </div>
+      )}
+
       {/* KPI Row 1 — clickable */}
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
-        <div className="cursor-pointer" onClick={() => openDrill('All Shipments', data)}><KPICard title="Total Shipments" value={stats.total} icon={Package} color="blue" /></div>
-        <div className="cursor-pointer" onClick={() => openDrill('In-Transit', data.filter((r) => isInTransit(r.status)))}><KPICard title="In-Transit" value={stats.inTransit} icon={Truck} color="indigo" /></div>
-        <div className="cursor-pointer" onClick={() => openDrill('Delivered', data.filter((r) => isDelivered(r.status) || isPartialDelivered(r.status)))}><KPICard title="Delivered" value={stats.delivered} icon={CheckCircle} color="green" subtitle={`${stats.deliveryPercent}%`} /></div>
-        <div className="cursor-pointer" onClick={() => openDrill('RTO Shipments', data.filter((r) => isRTO(r.status)))}><KPICard title="RTO" value={stats.rto} icon={RotateCcw} color="red" subtitle={`${stats.rtoPercent}%`} /></div>
-        <div className="cursor-pointer" onClick={() => openDrill('Lost Shipments', data.filter((r) => isLost(r.status)))}><KPICard title="Lost" value={stats.lost} icon={AlertTriangle} color="yellow" /></div>
+        <div className="cursor-pointer" onClick={() => openDrill('All Shipments', scopedData)}><KPICard title="Total Shipments" value={stats.total} icon={Package} color="blue" /></div>
+        <div className="cursor-pointer" onClick={() => openDrill('In-Transit', scopedData.filter((r) => isInTransit(r.status)))}><KPICard title="In-Transit" value={stats.inTransit} icon={Truck} color="indigo" /></div>
+        <div className="cursor-pointer" onClick={() => openDrill('Delivered', scopedData.filter((r) => isDelivered(r.status) || isPartialDelivered(r.status)))}><KPICard title="Delivered" value={stats.delivered} icon={CheckCircle} color="green" subtitle={`${stats.deliveryPercent}%`} /></div>
+        <div className="cursor-pointer" onClick={() => openDrill('RTO Shipments', scopedData.filter((r) => isRTO(r.status)))}><KPICard title="RTO" value={stats.rto} icon={RotateCcw} color="red" subtitle={`${stats.rtoPercent}%`} /></div>
+        <div className="cursor-pointer" onClick={() => openDrill('Lost Shipments', scopedData.filter((r) => isLost(r.status)))}><KPICard title="Lost" value={stats.lost} icon={AlertTriangle} color="yellow" /></div>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
         <KPICard title="Avg TAT" value={stats.avgTAT} suffix="days" icon={Clock} color="purple" />
-        <div className="cursor-pointer" onClick={() => openDrill('OFD Shipments', data.filter((r) => isOFD(r.status)))}><KPICard title="OFD" value={stats.ofd} icon={Truck} color="cyan" /></div>
+        <div className="cursor-pointer" onClick={() => openDrill('OFD Shipments', scopedData.filter((r) => isOFD(r.status)))}><KPICard title="OFD" value={stats.ofd} icon={Truck} color="cyan" /></div>
         <KPICard title="Total Cost" value={currency(stats.totalCost)} icon={IndianRupee} color="orange" />
         <KPICard title="POD Visibility" value={`${stats.podPercent}%`} icon={FileText} color="green" />
-        <div className="cursor-pointer" onClick={() => openDrill('With Appointment', data.filter((r) => safeParseDate(r.appointmentDate)))}><KPICard title="With Appointment" value={stats.withAppointment} icon={Eye} color="blue" /></div>
+        <div className="cursor-pointer" onClick={() => openDrill('With Appointment', scopedData.filter((r) => safeParseDate(r.appointmentDate)))}><KPICard title="With Appointment" value={stats.withAppointment} icon={Eye} color="blue" /></div>
       </div>
 
       {view === 'Overview' && (<>

@@ -1,10 +1,9 @@
 /**
- * Vercel Serverless Function — API proxy for Google Apps Script
- * Handles CORS and follows redirects so the browser doesn't have to.
- * Cached for 3 minutes to avoid hammering the Apps Script endpoint.
+ * Vercel Serverless Function - API proxy + query engine for logistics data.
  */
 
 import https from 'https';
+import { handleShipmentApiRequest } from './shipmentEngine.mjs';
 
 const APPS_SCRIPT_URL =
   'https://script.google.com/macros/s/AKfycbzu8zSSmcPeuMAxUdDylahx7UuNBmMXWYd8W1wCVptdR0oUVLEIrYJiz37TRW_qPk2kQA/exec';
@@ -24,13 +23,26 @@ function fetchFollowRedirects(url, maxRedirects = 5) {
   });
 }
 
-// In-memory cache (per serverless instance)
-let cachedBody = null;
-let cacheTime = 0;
-const CACHE_TTL = 3 * 60 * 1000; // 3 minutes
+let cachedRawBody = null;
+let cachedRawTs = 0;
+const RAW_CACHE_TTL = 3 * 60 * 1000;
+
+async function fetchRawRows(forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && cachedRawBody && now - cachedRawTs < RAW_CACHE_TTL) {
+    const parsed = JSON.parse(cachedRawBody);
+    return Array.isArray(parsed) ? parsed : parsed?.data || [];
+  }
+
+  const body = await fetchFollowRedirects(APPS_SCRIPT_URL);
+  cachedRawBody = body;
+  cachedRawTs = Date.now();
+
+  const parsed = JSON.parse(body);
+  return Array.isArray(parsed) ? parsed : parsed?.data || [];
+}
 
 export default async function handler(req, res) {
-  // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -41,22 +53,19 @@ export default async function handler(req, res) {
   }
 
   try {
-    const now = Date.now();
-    if (cachedBody && now - cacheTime < CACHE_TTL) {
-      res.setHeader('Content-Type', 'application/json');
-      res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=180');
-      res.status(200).send(cachedBody);
+    const fullUrl = new URL(req.url, 'http://localhost');
+    const forceRefresh = fullUrl.searchParams.get('refresh') === '1';
+
+    const result = await handleShipmentApiRequest(fullUrl, () => fetchRawRows(forceRefresh));
+    if (!result.ok) {
+      res.status(result.status || 400).json(result.body);
       return;
     }
 
-    const body = await fetchFollowRedirects(APPS_SCRIPT_URL);
-    cachedBody = body;
-    cacheTime = Date.now();
-
     res.setHeader('Content-Type', 'application/json');
-    res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=180');
-    res.status(200).send(body);
+    res.setHeader('Cache-Control', 'public, max-age=30, s-maxage=120');
+    res.status(200).json(result.body);
   } catch (err) {
-    res.status(502).json({ error: err.message });
+    res.status(502).json({ error: err.message || 'Request failed' });
   }
 }
