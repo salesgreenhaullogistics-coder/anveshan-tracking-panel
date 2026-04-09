@@ -163,9 +163,10 @@ function daysBetween(from, to) {
 
 function isInTransitRow(row) {
   const status = String(row.status || '').toLowerCase();
+  if (status.includes('rto')) return false; // Exclude RTO records
   if (status === 'in-transit') return true;
   const raw = String(row.rawStatus || '').toLowerCase();
-  return raw.includes('in transit') || raw.includes('in-transit') || raw.includes('intransit');
+  return (raw.includes('in transit') || raw.includes('in-transit') || raw.includes('intransit')) && !raw.includes('rto');
 }
 
 function isOfdRow(row) {

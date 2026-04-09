@@ -14,9 +14,12 @@ export default function Filters() {
   return (
     <div className="filter-bar">
       {hasFilters && (
-        <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-blue-50 border border-blue-200 rounded-lg">
-          <AlertCircle className="w-3.5 h-3.5 text-blue-600 flex-shrink-0" />
-          <span className="text-[10px] font-semibold text-blue-700">Filters Active</span>
+        <div className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-emerald-50 to-green-50 border-2 border-emerald-400 rounded-lg shadow-sm">
+          <AlertCircle className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+          <span className="text-[11px] font-bold text-emerald-700 uppercase tracking-wide">✓ Filters Applied</span>
+          <span className="text-[10px] text-emerald-600 ml-1">
+            ({Object.values(filters).filter(Boolean).length} active)
+          </span>
         </div>
       )}
 
