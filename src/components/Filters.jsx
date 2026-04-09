@@ -1,5 +1,5 @@
 import React from 'react';
-import { Search, X, SlidersHorizontal } from 'lucide-react';
+import { Search, X, SlidersHorizontal, AlertCircle } from 'lucide-react';
 import { useData } from '../context/DataContext';
 
 export default function Filters() {
@@ -13,6 +13,13 @@ export default function Filters() {
 
   return (
     <div className="filter-bar">
+      {hasFilters && (
+        <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-blue-50 border border-blue-200 rounded-lg">
+          <AlertCircle className="w-3.5 h-3.5 text-blue-600 flex-shrink-0" />
+          <span className="text-[10px] font-semibold text-blue-700">Filters Active</span>
+        </div>
+      )}
+
       <div className="flex items-center gap-1.5 text-gray-500 mr-1">
         <SlidersHorizontal className="w-3.5 h-3.5" />
         <span className="text-[10px] font-bold uppercase tracking-widest">Filters</span>
@@ -53,13 +60,13 @@ export default function Filters() {
         {uniqueValues.months.map((m) => <option key={m} value={m}>{m}</option>)}
       </select>
 
-      <button onClick={applyFilters} className="search-btn">
+      <button onClick={applyFilters} className="search-btn" title="Apply filters">
         <Search className="w-3.5 h-3.5" />
-        Search
+        Apply
       </button>
 
       {(hasFilters || hasPending) && (
-        <button onClick={clearFilters} className="clear-btn">
+        <button onClick={clearFilters} className="clear-btn" title="Clear all filters">
           <X className="w-3 h-3" />
           Clear
         </button>

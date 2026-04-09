@@ -146,7 +146,7 @@ function parseDate(value) {
   if (!value) return null;
   const d = new Date(value);
   if (!Number.isNaN(d.getTime())) return d;
-  const parts = String(value).split(/[\/-\.]/);
+  const parts = String(value).split(/[/.\-]/);
   if (parts.length === 3) {
     const tryIso = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
     if (!Number.isNaN(tryIso.getTime())) return tryIso;

@@ -69,7 +69,7 @@ export default function Dashboard() {
     setViewLoading(true);
     setViewError('');
     setViewData([]);
-    fetchScopedData(mappedTab)
+    fetchScopedData(mappedTab, filters)
       .then((rows) => {
         if (!active) return;
         setViewData(rows);
