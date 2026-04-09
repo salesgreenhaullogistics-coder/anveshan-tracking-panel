@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Search, X, Loader2, Clock3, Filter, Settings2 } from 'lucide-react';
+import { Search, X, Loader2, Clock3, Filter } from 'lucide-react';
 import { useData } from '../context/DataContext';
 import { formatDate, currency } from '../utils/index';
 
