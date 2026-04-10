@@ -3,24 +3,20 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
 
   try {
-    const { action } = req.query;
-
-    if (!action) {
-      return res.status(400).json({ error: 'Missing action parameter' });
-    }
+    const { action = 'shipments' } = req.query;
 
     // Simple test response
     if (action === 'test') {
       return res.status(200).json({ ok: true, message: 'API is working!' });
     }
 
-    // Placeholder for search, suggest, shipments
+    // Placeholder for all actions
     return res.status(200).json({
       ok: true,
       action,
       data: [],
       total: 0,
-      message: 'Action placeholder - API route is working'
+      message: 'API route working - placeholder response'
     });
   } catch (err) {
     console.error('API error:', err);
