@@ -229,8 +229,14 @@ export function DataProvider({ children }) {
   }, [rawData]);
 
   const globalSearch = useCallback(async (query, options = {}) => {
-    const payload = await searchShipments(query, options);
-    return payload;
+    try {
+      const payload = await searchShipments(query, options);
+      console.log('GlobalSearch callback result:', payload);
+      return payload;
+    } catch (err) {
+      console.error('GlobalSearch callback error:', err);
+      throw err;
+    }
   }, []);
 
   const fetchScopedData = useCallback(async (tab, scopedFilters = null) => {
@@ -243,8 +249,15 @@ export function DataProvider({ children }) {
   }, [filters]);
 
   const getSearchSuggestions = useCallback(async (query, options = {}) => {
-    const payload = await fetchSearchSuggestions(query, options);
-    return payload?.suggestions || [];
+    try {
+      const payload = await fetchSearchSuggestions(query, options);
+      const suggestions = payload?.suggestions || [];
+      console.log('GetSearchSuggestions result:', suggestions);
+      return suggestions;
+    } catch (err) {
+      console.error('GetSearchSuggestions error:', err);
+      return [];
+    }
   }, []);
 
   const refreshData = useCallback(() => loadData({ forceRefresh: true }), [loadData]);

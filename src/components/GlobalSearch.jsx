@@ -5,76 +5,56 @@ import { formatDate, currency } from '../utils/index';
 
 const HISTORY_KEY = 'anveshan-global-search-history';
 
-function tokenize(query) {
-  return String(query || '')
-    .split(/[\s,;|]+/)
-    .map((t) => t.trim())
-    .filter(Boolean);
-}
-
 function HighlightText({ text, query }) {
   const value = String(text || '-');
-  const tokens = tokenize(query);
-  if (!tokens.length || value === '-') return <>{value}</>;
+  if (!query || value === '-') return <>{value}</>;
+
+  const tokens = String(query).split(/\s+/).filter(Boolean);
+  if (!tokens.length) return <>{value}</>;
 
   const escaped = tokens.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-  if (!escaped) return <>{value}</>;
-
-  const regex = new RegExp(`(${escaped})`, 'ig');
+  const regex = new RegExp(`(${escaped})`, 'gi');
   const parts = value.split(regex);
+
   return (
     <>
-      {parts.map((part, idx) => (
-        part && new RegExp(`^(${escaped})$`, 'i').test(part)
+      {parts.map((part, idx) =>
+        part && regex.test(part)
           ? <mark key={idx} className="bg-yellow-200/70 rounded px-0.5">{part}</mark>
-          : <React.Fragment key={idx}>{part}</React.Fragment>
-      ))}
+          : <span key={idx}>{part}</span>
+      )}
     </>
   );
 }
 
 function ResultCard({ row, query }) {
-  const timeline = [
-    { label: 'Booked', value: formatDate(row.bookingDate) },
-    { label: 'Appointment', value: formatDate(row.appointmentDate) },
-    { label: 'Delivered', value: formatDate(row.deliveryDate) },
-  ];
-
   return (
-    <div className="border border-slate-200 rounded-xl p-3 bg-white">
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <div className="text-xs text-slate-500">AWB: <span className="font-semibold text-slate-700"><HighlightText text={row.awbNo} query={query} /></span></div>
-        <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-50 text-blue-700">{row.status || '-'}</span>
+    <div className="border border-slate-200 rounded-lg p-3 bg-white hover:shadow-md transition-shadow">
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <div className="text-xs">
+          <div className="text-slate-500">AWB: <span className="font-semibold text-slate-700"><HighlightText text={row.awbNo} query={query} /></span></div>
+        </div>
+        <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-100 text-blue-700 whitespace-nowrap">{row.status || '-'}</span>
       </div>
-      <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
-        <div><div className="text-slate-400">Invoice</div><div className="font-medium text-slate-700"><HighlightText text={row.invoiceNo} query={query} /></div></div>
-        <div><div className="text-slate-400">PO</div><div className="font-medium text-slate-700"><HighlightText text={row.poNumber} query={query} /></div></div>
-        <div><div className="text-slate-400">Ref. No.</div><div className="font-medium text-slate-700"><HighlightText text={row.refNo} query={query} /></div></div>
-        <div><div className="text-slate-400">Courier / Platform</div><div className="font-medium text-slate-700">{row.vendor || '-'} / {row.platform || '-'}</div></div>
+      <div className="grid grid-cols-2 gap-2 text-[10px] mb-2">
+        <div><span className="text-slate-500">Invoice:</span> <span className="font-medium"><HighlightText text={row.invoiceNo} query={query} /></span></div>
+        <div><span className="text-slate-500">PO:</span> <span className="font-medium"><HighlightText text={row.poNumber} query={query} /></span></div>
+        <div><span className="text-slate-500">Ref:</span> <span className="font-medium"><HighlightText text={row.refNo} query={query} /></span></div>
+        <div><span className="text-slate-500">Platform:</span> <span className="font-medium">{row.platform || '-'}</span></div>
       </div>
-      <div className="mt-2 flex flex-wrap items-center gap-3 text-[10px] text-slate-500">
-        <span>Booked: {formatDate(row.bookingDate)}</span>
-        <span>Appointment: {formatDate(row.appointmentDate)}</span>
-        <span>Delivered: {formatDate(row.deliveryDate)}</span>
+      <div className="text-[9px] text-slate-500 border-t pt-2 mt-2">
+        <span>Booked: {formatDate(row.bookingDate)} • </span>
+        <span>Delivered: {formatDate(row.deliveryDate)} • </span>
         <span>Cost: {currency(row.logisticsCost)}</span>
-      </div>
-      <div className="mt-2 flex items-center gap-2 overflow-x-auto pb-1">
-        {timeline.map((item, idx) => (
-          <React.Fragment key={item.label}>
-            <div className="rounded-md bg-slate-50 border border-slate-200 px-2 py-1 min-w-max">
-              <div className="text-[9px] uppercase tracking-wide text-slate-400">{item.label}</div>
-              <div className="text-[10px] font-medium text-slate-700">{item.value}</div>
-            </div>
-            {idx < timeline.length - 1 && <div className="text-slate-300 text-[10px]">→</div>}
-          </React.Fragment>
-        ))}
       </div>
     </div>
   );
 }
 
 export default function GlobalSearch() {
-  const { globalSearch, getSearchSuggestions } = useData();
+  const data = useData();
+  const globalSearch = data?.globalSearch;
+  const getSearchSuggestions = data?.getSearchSuggestions;
 
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
@@ -85,9 +65,11 @@ export default function GlobalSearch() {
   const [open, setOpen] = useState(false);
   const [history, setHistory] = useState(() => {
     try {
-      const parsed = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
+      const stored = localStorage.getItem(HISTORY_KEY);
+      const parsed = JSON.parse(stored || '[]');
+      return Array.isArray(parsed) ? parsed.slice(0, 8) : [];
+    } catch (e) {
+      console.warn('History parse error:', e);
       return [];
     }
   });
@@ -96,52 +78,61 @@ export default function GlobalSearch() {
   const debounceRef = useRef(null);
   const wrapperRef = useRef(null);
 
+  // Save history to localStorage
   useEffect(() => {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, 8)));
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, 8)));
+    } catch (e) {
+      console.warn('Failed to save history:', e);
+    }
   }, [history]);
 
+  // Close dropdown when clicking outside
   useEffect(() => {
-    const onMouseDown = (event) => {
+    function handleClickOutside(event) {
       if (wrapperRef.current && !wrapperRef.current.contains(event.target)) {
         setOpen(false);
       }
-    };
-    document.addEventListener('mousedown', onMouseDown);
-    return () => document.removeEventListener('mousedown', onMouseDown);
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Fetch suggestions as user types
   useEffect(() => {
-    if (!query.trim()) {
+    if (!query.trim() || !getSearchSuggestions) {
       setSuggestions([]);
       return;
     }
+
     clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(async () => {
       try {
-        const list = await getSearchSuggestions(query, { limit: 8 });
-        setSuggestions(list);
-      } catch {
+        const response = await getSearchSuggestions(query, { limit: 8 });
+        setSuggestions(Array.isArray(response) ? response : []);
+      } catch (err) {
+        console.error('Suggestions error:', err);
         setSuggestions([]);
       }
-    }, 180);
+    }, 200);
 
     return () => clearTimeout(debounceRef.current);
   }, [query, getSearchSuggestions]);
 
-  const executeSearch = useCallback(async (incomingQuery) => {
-    const q = String(incomingQuery ?? query).trim();
-    if (!q) return;
+  const executeSearch = useCallback(async (searchQuery) => {
+    const q = String(searchQuery ?? query).trim();
+    if (!q || !globalSearch) return;
 
     setLoading(true);
     setError('');
-    setOpen(true);
 
     try {
-      const payload = await globalSearch(q, { limit: 100 });
-      setResult(payload);
+      const response = await globalSearch(q, { limit: 100 });
+      setResult(response);
       setStatusFilter('All');
-      setHistory((prev) => [q, ...prev.filter((v) => v !== q)].slice(0, 8));
+      setHistory((prev) => [q, ...prev.filter((v) => v !== q)]);
     } catch (err) {
+      console.error('Search error:', err);
       setError(err.message || 'Search failed');
       setResult(null);
     } finally {
@@ -150,59 +141,110 @@ export default function GlobalSearch() {
   }, [globalSearch, query]);
 
   const filteredResults = useMemo(() => {
-    const rows = result?.data || [];
-    if (statusFilter === 'All') return rows;
-    return rows.filter((row) => row.status === statusFilter);
+    if (!result || !Array.isArray(result.data)) return [];
+    if (statusFilter === 'All') return result.data;
+    return result.data.filter((row) => row.status === statusFilter);
   }, [result, statusFilter]);
 
   const statusOptions = useMemo(() => {
-    const rows = result?.data || [];
-    const set = new Set(rows.map((r) => r.status).filter(Boolean));
-    return ['All', ...Array.from(set)];
+    if (!result || !Array.isArray(result.data)) return ['All'];
+    const statuses = new Set(result.data.map((r) => r.status).filter(Boolean));
+    return ['All', ...Array.from(statuses)];
   }, [result]);
+
+  // Return nothing if functions not available
+  if (!globalSearch || !getSearchSuggestions) {
+    return null;
+  }
 
   return (
     <div ref={wrapperRef} className="relative w-full">
-      <div className="flex items-stretch rounded-md border border-slate-200 bg-white shadow-xs overflow-hidden hover:border-slate-300 transition-colors">
-        <div className="flex items-center gap-2 px-2.5 py-1.5 flex-1 min-w-0">
-          <Search className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
+      {/* Search Input */}
+      <div className="flex items-center rounded-lg border border-slate-200 bg-white shadow-sm hover:border-slate-300 transition-colors overflow-hidden">
+        <Search className="w-4 h-4 text-slate-400 ml-3 flex-shrink-0" />
         <input
           ref={inputRef}
+          type="text"
           value={query}
-          onFocus={() => setOpen(true)}
           onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && executeSearch()}
-          placeholder="Search..."
-          className="w-full bg-transparent outline-none text-xs text-slate-700 placeholder:text-slate-500"
-          title="Global search across all shipments"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') executeSearch();
+            if (e.key === 'Escape') setOpen(false);
+          }}
+          onFocus={() => setOpen(true)}
+          placeholder="Search AWB, Invoice, PO, Ref..."
+          className="flex-1 px-3 py-2 bg-transparent outline-none text-sm text-slate-700 placeholder:text-slate-400"
         />
-          {query && <button onClick={() => { setQuery(''); setResult(null); setOpen(false); }} className="text-slate-400 hover:text-slate-600 flex-shrink-0"><X className="w-3 h-3" /></button>}
-        </div>
+        {query && (
+          <button
+            onClick={() => {
+              setQuery('');
+              setResult(null);
+              setOpen(false);
+              setSuggestions([]);
+              inputRef.current?.focus();
+            }}
+            className="p-1 mr-1 hover:bg-slate-100 rounded transition-colors"
+            title="Clear"
+          >
+            <X className="w-4 h-4 text-slate-400" />
+          </button>
+        )}
         <button
           onClick={() => executeSearch()}
-          title="Execute search"
-          className="px-2 border-l border-slate-200 bg-slate-50 hover:bg-slate-100 transition-colors flex items-center flex-shrink-0"
+          disabled={loading}
+          className="px-3 py-2 bg-slate-50 hover:bg-slate-100 disabled:opacity-50 transition-colors border-l border-slate-200"
+          title="Search"
         >
-          <Search className="w-3.5 h-3.5 text-slate-600" />
+          {loading ? <Loader2 className="w-4 h-4 animate-spin text-slate-600" /> : <Search className="w-4 h-4 text-slate-600" />}
         </button>
       </div>
 
+      {/* Dropdown Menu */}
       {open && (
-        <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-40 bg-white border border-slate-200 rounded-xl shadow-lg p-3 max-h-[70vh] overflow-auto">
+        <div className="absolute left-0 right-0 top-full mt-2 z-50 bg-white border border-slate-200 rounded-lg shadow-xl max-h-96 overflow-y-auto">
+          {/* Loading State */}
+          {loading && (
+            <div className="p-4 text-center text-slate-600 text-sm flex items-center justify-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Searching...
+            </div>
+          )}
+
+          {/* Error State */}
+          {error && !loading && (
+            <div className="p-4 text-red-600 text-sm bg-red-50 border-b border-slate-200">
+              {error}
+            </div>
+          )}
+
+          {/* History */}
           {!result && !loading && !query.trim() && history.length > 0 && (
-            <div>
-              <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide mb-2 flex items-center gap-1"><Clock3 className="w-3 h-3" /> Recent Searches</div>
+            <div className="p-3 border-b border-slate-200">
+              <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2 flex items-center gap-1">
+                <Clock3 className="w-3 h-3" /> Recent Searches
+              </div>
               <div className="flex flex-wrap gap-2">
                 {history.map((item) => (
-                  <button key={item} onClick={() => { setQuery(item); executeSearch(item); }} className="px-2 py-1 text-xs rounded-md bg-slate-100 text-slate-700 hover:bg-slate-200">{item}</button>
+                  <button
+                    key={item}
+                    onClick={() => {
+                      setQuery(item);
+                      executeSearch(item);
+                    }}
+                    className="px-2.5 py-1 text-xs rounded-md bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors"
+                  >
+                    {item}
+                  </button>
                 ))}
               </div>
             </div>
           )}
 
+          {/* Suggestions */}
           {!result && !loading && query.trim() && suggestions.length > 0 && (
-            <div>
-              <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide mb-2">Suggestions</div>
+            <div className="p-3 border-b border-slate-200">
+              <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Suggestions</div>
               <div className="space-y-1">
                 {suggestions.map((s, idx) => (
                   <button
@@ -211,52 +253,60 @@ export default function GlobalSearch() {
                       setQuery(s.value);
                       executeSearch(s.value);
                     }}
-                    className="w-full text-left px-2 py-1.5 rounded-md hover:bg-slate-50 text-xs"
+                    className="w-full text-left px-2.5 py-2 rounded-md hover:bg-slate-50 text-xs transition-colors"
                   >
-                    <span className="text-slate-500">{s.fieldLabel}: </span>
-                    <span className="font-medium text-slate-700"><HighlightText text={s.value} query={query} /></span>
+                    <span className="text-slate-500">{s.fieldLabel}:</span>{' '}
+                    <span className="font-medium text-slate-700">{s.value}</span>
                   </button>
                 ))}
               </div>
             </div>
           )}
 
-          {loading && (
-            <div className="flex items-center gap-2 text-xs text-slate-600"><Loader2 className="w-4 h-4 animate-spin" /> Searching shipments...</div>
-          )}
-
-          {error && <div className="text-xs text-red-600">{error}</div>}
-
+          {/* Results */}
           {result && !loading && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <div className="text-xs text-slate-700">
-                  <span className="font-semibold">{result.total}</span> result(s)
-                  <span className="text-slate-500"> | Detected Type: {result.detectedTypeLabel || 'Mixed'}</span>
+            <div className="p-3 space-y-3">
+              <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-200">
+                <div className="text-xs text-slate-600">
+                  <span className="font-semibold text-slate-900">{result.total || 0}</span> result(s)
+                  {result.detectedTypeLabel && <span className="text-slate-500 ml-1">• {result.detectedTypeLabel}</span>}
                 </div>
                 {statusOptions.length > 1 && (
-                  <div className="flex items-center gap-2">
-                    <Filter className="w-3.5 h-3.5 text-slate-400" />
-                    <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="text-xs border border-slate-200 rounded-md px-2 py-1">
-                      {statusOptions.map((st) => <option key={st} value={st}>{st}</option>)}
-                    </select>
-                  </div>
+                  <select
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value)}
+                    className="text-xs border border-slate-200 rounded px-2 py-1 bg-white hover:border-slate-300"
+                  >
+                    {statusOptions.map((st) => (
+                      <option key={st} value={st}>{st}</option>
+                    ))}
+                  </select>
                 )}
               </div>
 
               {filteredResults.length === 0 ? (
-                <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-3">
-                  No Data Found. Try full AWB/Invoice value, fewer tokens, or check for typos.
+                <div className="text-xs text-slate-600 bg-slate-50 p-3 rounded-lg text-center">
+                  No results found. Try different search terms.
                 </div>
-              ) : filteredResults.length === 1 ? (
-                <ResultCard row={filteredResults[0]} query={query} />
               ) : (
                 <div className="space-y-2">
-                  {filteredResults.map((row) => (
-                    <ResultCard key={`${row.awbNo}-${row.invoiceNo}-${row.poNumber}`} row={row} query={query} />
+                  {filteredResults.slice(0, 10).map((row, idx) => (
+                    <ResultCard key={`${row.awbNo}-${idx}`} row={row} query={query} />
                   ))}
+                  {filteredResults.length > 10 && (
+                    <div className="text-xs text-slate-500 text-center py-2">
+                      Showing 10 of {filteredResults.length} results
+                    </div>
+                  )}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Empty State */}
+          {!result && !loading && !error && !query.trim() && history.length === 0 && (
+            <div className="p-8 text-center text-slate-400 text-xs">
+              Start searching by entering an AWB, Invoice, PO or Ref number
             </div>
           )}
         </div>

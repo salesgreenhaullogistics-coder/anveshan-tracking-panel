@@ -478,9 +478,9 @@ export async function handleShipmentApiRequest(url, fetchRawFn) {
         action,
         query: result.query,
         detectedType: result.detectedType,
-        detectedTypeLabel: result.detectedTypeLabel,
+        detectedTypeLabel: result.detectedTypeLabel || 'Mixed',
         total: result.results.length,
-        data: result.results,
+        data: result.results.map(stripInternalFields),
       },
     };
   }

@@ -60,7 +60,7 @@ export default function App() {
                 </div>
               )}
             </div>
-            <div className="w-64 flex-shrink-0">
+            <div className="min-w-0 flex-1 max-w-sm">
               <GlobalSearch />
             </div>
           </div>

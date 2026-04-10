@@ -69,9 +69,19 @@ export async function searchShipments(query, options = {}) {
   });
   if (forceRefresh) params.set('refresh', '1');
 
-  const res = await fetchWithTimeout(`/api?${params.toString()}`, { redirect: 'follow' });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  const url = `/api?${params.toString()}`;
+  console.log('Searching:', url);
+
+  try {
+    const res = await fetchWithTimeout(url, { redirect: 'follow' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    const json = await res.json();
+    console.log('Search result:', json);
+    return json || { data: [], total: 0, query };
+  } catch (err) {
+    console.error('Search API error:', err);
+    throw err;
+  }
 }
 
 export async function fetchSearchSuggestions(query, options = {}) {
@@ -81,9 +91,19 @@ export async function fetchSearchSuggestions(query, options = {}) {
     q: query || '',
     limit: String(limit),
   });
-  const res = await fetchWithTimeout(`/api?${params.toString()}`, { redirect: 'follow' });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+
+  const url = `/api?${params.toString()}`;
+
+  try {
+    const res = await fetchWithTimeout(url, { redirect: 'follow' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    const json = await res.json();
+    console.log('Suggestions:', json);
+    return json || { suggestions: [] };
+  } catch (err) {
+    console.error('Suggestions API error:', err);
+    throw err;
+  }
 }
 
 // ── Fuzzy Status Matching ────────────────────────────────────────────────────
