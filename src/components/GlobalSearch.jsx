@@ -56,6 +56,8 @@ export default function GlobalSearch() {
   const globalSearch = data?.globalSearch;
   const getSearchSuggestions = data?.getSearchSuggestions;
 
+  console.log('GlobalSearch: globalSearch =', !!globalSearch, 'getSearchSuggestions =', !!getSearchSuggestions);
+
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
@@ -139,23 +141,6 @@ export default function GlobalSearch() {
       setLoading(false);
     }
   }, [globalSearch, query]);
-
-  const filteredResults = useMemo(() => {
-    if (!result || !Array.isArray(result.data)) return [];
-    if (statusFilter === 'All') return result.data;
-    return result.data.filter((row) => row.status === statusFilter);
-  }, [result, statusFilter]);
-
-  const statusOptions = useMemo(() => {
-    if (!result || !Array.isArray(result.data)) return ['All'];
-    const statuses = new Set(result.data.map((r) => r.status).filter(Boolean));
-    return ['All', ...Array.from(statuses)];
-  }, [result]);
-
-  // Return nothing if functions not available
-  if (!globalSearch || !getSearchSuggestions) {
-    return null;
-  }
 
   return (
     <div ref={wrapperRef} className="relative w-full">
