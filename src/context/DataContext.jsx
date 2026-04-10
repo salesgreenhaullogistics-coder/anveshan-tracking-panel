@@ -231,7 +231,6 @@ export function DataProvider({ children }) {
   const globalSearch = useCallback(async (query, options = {}) => {
     try {
       const payload = await searchShipments(query, options);
-      console.log('GlobalSearch callback result:', payload);
       return payload;
     } catch (err) {
       console.error('GlobalSearch callback error:', err);
@@ -252,7 +251,6 @@ export function DataProvider({ children }) {
     try {
       const payload = await fetchSearchSuggestions(query, options);
       const suggestions = payload?.suggestions || [];
-      console.log('GetSearchSuggestions result:', suggestions);
       return suggestions;
     } catch (err) {
       console.error('GetSearchSuggestions error:', err);

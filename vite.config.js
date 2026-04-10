@@ -91,7 +91,7 @@ function apiProxyPlugin() {
 
       server.middlewares.use('/api', async (req, res) => {
         try {
-          const fullUrl = new URL(req.url || '', 'http://localhost');
+          const fullUrl = new URL(`/api${req.url || ''}`, 'http://localhost');
           const forceRefresh = fullUrl.searchParams.get('refresh') === '1';
           const result = await handleShipmentApiRequest(fullUrl, () => getRawRows(forceRefresh));
 

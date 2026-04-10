@@ -56,8 +56,6 @@ export default function GlobalSearch() {
   const globalSearch = data?.globalSearch;
   const getSearchSuggestions = data?.getSearchSuggestions;
 
-  console.log('GlobalSearch: globalSearch =', !!globalSearch, 'getSearchSuggestions =', !!getSearchSuggestions);
-
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
@@ -65,13 +63,25 @@ export default function GlobalSearch() {
   const [suggestions, setSuggestions] = useState([]);
   const [statusFilter, setStatusFilter] = useState('All');
   const [open, setOpen] = useState(false);
+
+  // Derive these from result data
+  const statusOptions = useMemo(() => {
+    if (!result?.data || result.data.length === 0) return ['All'];
+    const statuses = [...new Set(result.data.map((r) => r.status).filter(Boolean))].sort();
+    return ['All', ...statuses];
+  }, [result]);
+
+  const filteredResults = useMemo(() => {
+    if (!result?.data) return [];
+    if (statusFilter === 'All') return result.data;
+    return result.data.filter((r) => r.status === statusFilter);
+  }, [result, statusFilter]);
   const [history, setHistory] = useState(() => {
     try {
       const stored = localStorage.getItem(HISTORY_KEY);
       const parsed = JSON.parse(stored || '[]');
       return Array.isArray(parsed) ? parsed.slice(0, 8) : [];
     } catch (e) {
-      console.warn('History parse error:', e);
       return [];
     }
   });
@@ -85,7 +95,7 @@ export default function GlobalSearch() {
     try {
       localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, 8)));
     } catch (e) {
-      console.warn('Failed to save history:', e);
+      // ignore
     }
   }, [history]);
 

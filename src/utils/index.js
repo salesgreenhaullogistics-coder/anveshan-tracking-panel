@@ -54,7 +54,6 @@ export async function fetchShipmentData(options = {}) {
       return rows;
     } catch (err) {
       lastErr = err;
-      console.warn('Fetch attempt failed:', err.message);
     }
   }
   throw lastErr || new Error('All fetch attempts failed');
@@ -70,13 +69,11 @@ export async function searchShipments(query, options = {}) {
   if (forceRefresh) params.set('refresh', '1');
 
   const url = `/api?${params.toString()}`;
-  console.log('Searching:', url);
 
   try {
     const res = await fetchWithTimeout(url, { redirect: 'follow' });
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
     const json = await res.json();
-    console.log('Search result:', json);
     return json || { data: [], total: 0, query };
   } catch (err) {
     console.error('Search API error:', err);
@@ -98,7 +95,6 @@ export async function fetchSearchSuggestions(query, options = {}) {
     const res = await fetchWithTimeout(url, { redirect: 'follow' });
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
     const json = await res.json();
-    console.log('Suggestions:', json);
     return json || { suggestions: [] };
   } catch (err) {
     console.error('Suggestions API error:', err);
