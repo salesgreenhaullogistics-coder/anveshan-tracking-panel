@@ -11,6 +11,7 @@
     "deploy": "netlify deploy --build --prod"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.96.0",
     "chart.js": "^4.4.7",
     "chartjs-plugin-datalabels": "^2.2.0",
     "date-fns": "^3.6.0",

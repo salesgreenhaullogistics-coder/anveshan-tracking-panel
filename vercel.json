@@ -1,5 +1,11 @@
 {
-  "buildCommand": "npm run build",
+  "buildCommand": "npx vite build",
   "outputDirectory": "dist",
-  "framework": "vite"
+  "framework": null,
+  "functions": {
+    "api/compose-email.mjs": {
+      "memory": 256,
+      "maxDuration": 30
+    }
+  }
 }

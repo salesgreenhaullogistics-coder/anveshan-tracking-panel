@@ -38,6 +38,8 @@ const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep
 const MONTH_NAME_TO_IDX = {
   january: 0, february: 1, march: 2, april: 3, may: 4, june: 5,
   july: 6, august: 7, september: 8, october: 9, november: 10, december: 11,
+  jan: 0, feb: 1, mar: 2, apr: 3, jun: 5,
+  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
 };
 
 const HEADER_VALUES = new Set([
@@ -48,7 +50,7 @@ const HEADER_VALUES = new Set([
 ]);
 
 const EMPTY_FILTERS = { platform: '', courier: '', zone: '', city: '', dateFrom: '', dateTo: '', month: '' };
-const TAB_KEYS = ['dashboard', 'intransit', 'ofd', 'appointment', 'aged-pos', 'lost', 'prepull', 'delivered', 'return', 'pods', 'grn', 'kpi', 'okr', 'cost', 'poc', 'sop', 'provision'];
+const TAB_KEYS = ['dashboard', 'all-lrs', 'intransit', 'ofd', 'appointment', 'aged-pos', 'lost', 'prepull', 'aging-monitor', 'delivered', 'return', 'pods', 'grn', 'kpi', 'okr', 'cost', 'analytics', 'poc', 'sop', 'provision'];
 
 function makeInitialTabFilterState() {
   const obj = {};
@@ -99,6 +101,7 @@ function parseRows(raw) {
         const val = row[apiKey];
         obj[internalKey] = val !== undefined && val !== null ? String(val).trim() : '';
       }
+      if (!obj.bookingDate && row.ff) obj.bookingDate = String(row.ff).trim();
       obj.platform = correctPlatformName(obj.consignee);
       obj.status = correctStatus(obj.status);
       obj.month = deriveMMMYY(obj.month, obj.bookingDate);
@@ -165,13 +168,12 @@ export function DataProvider({ children }) {
 
     setLoading(true);
     setError(null);
-    setRawData([]);
-    setLastFetched(null);
 
     try {
+      /* analytics/cost/kpi/okr tabs use full dashboard data */
+      const apiTab = ['analytics', 'cost', 'kpi', 'okr', 'all-lrs', 'aging-monitor'].includes(activeTab) ? 'dashboard' : activeTab;
       const result = await fetchShipmentData({
-        tab: activeTab,
-        filters,
+        tab: apiTab,
         forceRefresh,
       });
       const parsed = parseRows(result);
@@ -188,7 +190,7 @@ export function DataProvider({ children }) {
         setLoading(false);
       }
     }
-  }, [activeTab, filters]);
+  }, [activeTab]);
 
   useEffect(() => {
     loadData({ forceRefresh: false });
@@ -209,34 +211,34 @@ export function DataProvider({ children }) {
   }, [activeTab, updateTabState]);
 
   const uniqueValues = useMemo(() => {
-    const platforms = [...new Set(rawData.map((r) => r.platform).filter(Boolean))].sort();
-    const couriers = [...new Set(rawData.map((r) => r.vendor).filter(Boolean))].sort();
-    const zones = [...new Set(rawData.map((r) => r.zone).filter(Boolean))].sort();
-    const cities = [...new Set(rawData.map((r) => r.destination).filter(Boolean))].sort();
-
-    const monthSet = [...new Set(rawData.map((r) => r.month).filter(Boolean))];
-    const months = monthSet
-      .map((m) => {
-        const abbr = m.slice(0, 3);
-        const yr = parseInt(`20${m.slice(4)}`, 10) || 2000;
-        const mi = MONTH_ABBR.indexOf(abbr);
-        return { label: m, sort: yr * 100 + mi };
-      })
-      .sort((a, b) => a.sort - b.sort)
-      .map((m) => m.label);
-
-    return { platforms, couriers, zones, cities, months };
+    const pSet = new Set(), cSet = new Set(), zSet = new Set(), dSet = new Set(), mSet = new Set();
+    for (const r of rawData) {
+      if (r.platform) pSet.add(r.platform);
+      if (r.vendor) cSet.add(r.vendor);
+      if (r.zone) zSet.add(r.zone);
+      if (r.destination) dSet.add(r.destination);
+      if (r.month) mSet.add(r.month);
+    }
+    const months = [...mSet]
+      .map(m => ({ label: m, sort: (parseInt(`20${m.slice(4)}`, 10) || 2000) * 100 + MONTH_ABBR.indexOf(m.slice(0, 3)) }))
+      .sort((a, b) => a.sort - b.sort).map(m => m.label);
+    return { platforms: [...pSet].sort(), couriers: [...cSet].sort(), zones: [...zSet].sort(), cities: [...dSet].sort(), months };
   }, [rawData]);
 
   const globalSearch = useCallback(async (query, options = {}) => {
-    try {
-      const payload = await searchShipments(query, options);
-      return payload;
-    } catch (err) {
-      console.error('GlobalSearch callback error:', err);
-      throw err;
-    }
-  }, []);
+    const { limit = 100 } = options;
+    const q = (query || '').trim().toLowerCase();
+    if (!q) return { data: [], total: 0, query };
+
+    const tokens = q.split(/\s+/).filter(Boolean);
+    const results = rawData.filter((r) => {
+      const searchable = [r.awbNo, r.invoiceNo, r.poNumber, r.refNo, r.cnNo, r.platform, r.vendor, r.destination, r.status]
+        .map(v => (v || '').toLowerCase()).join(' ');
+      return tokens.every(t => searchable.includes(t));
+    });
+
+    return { data: results.slice(0, limit), total: results.length, query, detectedTypeLabel: `${results.length} matches` };
+  }, [rawData]);
 
   const fetchScopedData = useCallback(async (tab, scopedFilters = null) => {
     const result = await fetchShipmentData({
@@ -248,15 +250,53 @@ export function DataProvider({ children }) {
   }, [filters]);
 
   const getSearchSuggestions = useCallback(async (query, options = {}) => {
-    try {
-      const payload = await fetchSearchSuggestions(query, options);
-      const suggestions = payload?.suggestions || [];
-      return suggestions;
-    } catch (err) {
-      console.error('GetSearchSuggestions error:', err);
-      return [];
+    const { limit = 8 } = options;
+    const q = (query || '').trim().toLowerCase();
+    if (!q || q.length < 2) return [];
+
+    const seen = new Set();
+    const suggestions = [];
+    const fields = [
+      { key: 'awbNo', fieldLabel: 'AWB' },
+      { key: 'invoiceNo', fieldLabel: 'Invoice' },
+      { key: 'poNumber', fieldLabel: 'PO' },
+      { key: 'refNo', fieldLabel: 'Ref' },
+    ];
+
+    for (const row of rawData) {
+      if (suggestions.length >= limit) break;
+      for (const { key, fieldLabel } of fields) {
+        const val = (row[key] || '').trim();
+        if (val && val.toLowerCase().includes(q) && !seen.has(val)) {
+          seen.add(val);
+          suggestions.push({ field: key, fieldLabel, value: val });
+          if (suggestions.length >= limit) break;
+        }
+      }
     }
-  }, []);
+    return suggestions;
+  }, [rawData]);
+
+  /* ─── client-side filter application ─── */
+  const filteredData = useMemo(() => {
+    if (!Object.values(filters).some(Boolean)) return rawData;
+    return rawData.filter((r) => {
+      if (filters.platform && r.platform !== filters.platform) return false;
+      if (filters.courier && r.vendor !== filters.courier) return false;
+      if (filters.zone && r.zone !== filters.zone) return false;
+      if (filters.city && r.destination !== filters.city) return false;
+      if (filters.month && r.month !== filters.month) return false;
+      if (filters.dateFrom) {
+        const bd = r.bookingDate ? new Date(r.bookingDate) : null;
+        if (bd && !isNaN(bd) && bd < new Date(filters.dateFrom)) return false;
+      }
+      if (filters.dateTo) {
+        const bd = r.bookingDate ? new Date(r.bookingDate) : null;
+        if (bd && !isNaN(bd) && bd > new Date(filters.dateTo + 'T23:59:59')) return false;
+      }
+      return true;
+    });
+  }, [rawData, filters]);
 
   const refreshData = useCallback(() => loadData({ forceRefresh: true }), [loadData]);
 
@@ -264,7 +304,7 @@ export function DataProvider({ children }) {
     activeTab,
     setActiveTab,
     rawData,
-    data: rawData,
+    data: filteredData,
     loading,
     error,
     lastFetched,

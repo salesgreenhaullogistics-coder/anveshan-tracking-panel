@@ -44,6 +44,8 @@ const MONTH_NAME_TO_IDX = {
   october: 9,
   november: 10,
   december: 11,
+  jan: 0, feb: 1, mar: 2, apr: 3, jun: 5,
+  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
 };
 
 const HEADER_VALUES = new Set([
@@ -98,6 +100,8 @@ function toObjectRow(row) {
     const val = row?.[apiKey];
     obj[internalKey] = val !== undefined && val !== null ? String(val).trim() : '';
   }
+  /* fallback: some API responses use "ff" for booking date */
+  if (!obj.bookingDate && row?.ff) obj.bookingDate = String(row.ff).trim();
   obj.rawStatus = obj.status;
   obj.platform = correctPlatformName(obj.consignee);
   obj.status = correctStatus(obj.status);

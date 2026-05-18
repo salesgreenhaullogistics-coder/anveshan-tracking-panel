@@ -4,7 +4,7 @@ import DataTable from '../components/DataTable';
 import KPICard from '../components/KPICard';
 import { BarChart, PieChart } from '../components/Charts';
 import { Clock, AlertTriangle } from 'lucide-react';
-import { safeParseDate, formatDate, getAgeBucket, isAged, groupBy } from '../utils/index';
+import { safeParseDate, formatDate, getAgeBucket, isAged, groupBy, isInTransit, isOFD } from '../utils/index';
 
 const AGE_FILTERS = ['All', '0-3 Days', '4-7 Days', '8-15 Days', '15+ Days'];
 
@@ -14,6 +14,7 @@ export default function AgedPOs() {
 
   const agedData = useMemo(() => {
     return data
+      .filter((r) => isInTransit(r.status) || isOFD(r.status))
       .filter((r) => isAged(r.bookingDate, 7))
       .map((r) => {
         const bd = safeParseDate(r.bookingDate);

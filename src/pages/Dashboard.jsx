@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useData } from '../context/DataContext';
 import KPICard from '../components/KPICard';
 import { BarChart, LineChart, PieChart, DoughnutChart } from '../components/Charts';
@@ -97,8 +97,12 @@ export default function Dashboard() {
     const rto = scopedData.filter((r) => isRTO(r.status)).length;
     const rtoDelivered = scopedData.filter((r) => isRTODelivered(r.status)).length;
     const lost = scopedData.filter((r) => isLost(r.status)).length;
-    const withAppointment = scopedData.filter((r) => safeParseDate(r.appointmentDate)).length;
-    const withoutAppointment = total - withAppointment;
+    /* Appointment counts — for Appointment view, only count in-transit/OFD shipments */
+    const appointmentSource = view === 'Appointment'
+      ? scopedData.filter((r) => isInTransit(r.status) || isOFD(r.status))
+      : scopedData;
+    const withAppointment = appointmentSource.filter((r) => safeParseDate(r.appointmentDate)).length;
+    const withoutAppointment = appointmentSource.length - withAppointment;
     const deliveryPercent = percent(delivered, total);
     const rtoPercent = percent(rto, total);
     const podCount = scopedData.filter((r) => r.pod && r.pod.toLowerCase() !== '' && r.pod !== '-').length;
@@ -111,8 +115,10 @@ export default function Dashboard() {
       .filter((d) => d !== null && d >= 0);
     const avgTAT = tatVals.length ? Math.round((tatVals.reduce((a, b) => a + b, 0) / tatVals.length) * 10) / 10 : 0;
 
+    /* Age buckets — always only count in-transit/OFD shipments (aging only matters for undelivered) */
     const ageBuckets = { '0-3 Days': 0, '4-7 Days': 0, '8-15 Days': 0, '15+ Days': 0 };
-    scopedData.forEach((r) => {
+    const ageBucketSource = scopedData.filter((r) => isInTransit(r.status) || isOFD(r.status));
+    ageBucketSource.forEach((r) => {
       const bd = safeParseDate(r.bookingDate);
       if (bd) { const age = Math.floor((new Date() - bd) / 86400000); const b = getAgeBucket(age); if (ageBuckets[b] !== undefined) ageBuckets[b]++; }
     });
@@ -122,23 +128,29 @@ export default function Dashboard() {
     const platformGroups = groupBy(knownData, 'platform');
     const platformStats = Object.entries(platformGroups)
       .map(([platform, rows]) => {
-        const del = rows.filter((r) => isDelivered(r.status) || isPartialDelivered(r.status)).length;
-        const rtoC = rows.filter((r) => isRTO(r.status)).length;
-        const failedRows = rows.filter((r) => !(isDelivered(r.status) || isPartialDelivered(r.status)));
+        let del = 0, rtoC = 0, intC = 0, lostC = 0, failC = 0, costSum = 0;
         const remarkCounts = {};
-        failedRows.forEach((r) => {
-          const rm = (r.failureRemarks || '').trim();
-          const key = rm && rm !== 'NA' && rm !== '-' ? rm : 'No remark available';
-          remarkCounts[key] = (remarkCounts[key] || 0) + 1;
-        });
+        let notDelivered = 0;
+        for (const r of rows) {
+          if (isDelivered(r.status) || isPartialDelivered(r.status)) del++;
+          else if (isRTO(r.status)) rtoC++;
+          else if (isInTransit(r.status) || isOFD(r.status)) intC++;
+          else if (isLost(r.status)) lostC++;
+          else failC++;
+          /* Collect failure remarks from ALL non-delivered shipments */
+          if (!(isDelivered(r.status) || isPartialDelivered(r.status))) {
+            notDelivered++;
+            const rm = (r.failureRemarks || '').trim();
+            const key = rm && rm !== 'NA' && rm !== '-' ? rm : 'No remark available';
+            remarkCounts[key] = (remarkCounts[key] || 0) + 1;
+          }
+          costSum += parseFloat(r.logisticsCost) || 0;
+        }
         return {
           platform, total: rows.length, delivered: del, rto: rtoC,
-          lost: rows.filter((r) => isLost(r.status)).length,
-          inTransit: rows.filter((r) => isInTransit(r.status)).length,
-          cost: rows.reduce((s, r) => s + (parseFloat(r.logisticsCost) || 0), 0),
-          delPercent: percent(del, rows.length),
+          lost: lostC, inTransit: intC, failed: failC, notDelivered,
+          cost: costSum, delPercent: percent(del, rows.length),
           failureReasons: Object.entries(remarkCounts).sort((a, b) => b[1] - a[1]),
-          allRows: rows,
         };
       })
       .sort((a, b) => b.total - a.total);
@@ -169,12 +181,26 @@ export default function Dashboard() {
       .sort((a, b) => b.total - a.total);
 
     return { total, inTransit, ofd, delivered, rto, rtoDelivered, lost, withAppointment, withoutAppointment, deliveryPercent, rtoPercent, podCount, podPercent, totalCost, avgTAT, ageBuckets, platformStats, zoneStats, monthStats, courierStats };
-  }, [scopedData]);
+  }, [scopedData, view]);
 
   const openDrill = (title, rows) => setDrillDown({ title, rows });
   const closeDrill = () => setDrillDown(null);
 
-  const failurePlatforms = useMemo(() => stats.platformStats.filter((p) => p.delPercent < 100 && p.total > 0), [stats.platformStats]);
+  /* On-demand platform drill-down — avoids storing row arrays in stats */
+  const drillPlatform = useCallback((platform, statusFilter) => {
+    const rows = scopedData.filter(r => isKnownPlatform(r.platform) && r.platform === platform);
+    let filtered, label;
+    switch (statusFilter) {
+      case 'delivered': filtered = rows.filter(r => isDelivered(r.status) || isPartialDelivered(r.status)); label = 'Delivered'; break;
+      case 'rto': filtered = rows.filter(r => isRTO(r.status)); label = 'RTO'; break;
+      case 'intransit': filtered = rows.filter(r => isInTransit(r.status) || isOFD(r.status)); label = 'In-Transit'; break;
+      case 'failed': filtered = rows.filter(r => !(isDelivered(r.status) || isPartialDelivered(r.status)) && !(isInTransit(r.status) || isOFD(r.status)) && !isRTO(r.status) && !isLost(r.status)); label = 'Failed'; break;
+      default: filtered = rows; label = 'All Shipments'; break;
+    }
+    openDrill(`${platform} — ${label}`, filtered);
+  }, [scopedData]);
+
+  const failurePlatforms = useMemo(() => stats.platformStats.filter((p) => p.notDelivered > 0), [stats.platformStats]);
 
   return (
     <div className="space-y-4">
@@ -251,8 +277,8 @@ export default function Dashboard() {
             ]} height={200} />
           </div>
           <div className="chart-container">
-            <BarChart title="Age Bucket Distribution" labels={Object.keys(stats.ageBuckets)} datasets={[
-              { label: 'Shipments', data: Object.values(stats.ageBuckets), color: '#6366F1' },
+            <BarChart title="Age Bucket Distribution (In-Transit)" labels={Object.keys(stats.ageBuckets)} datasets={[
+              { label: 'In-Transit', data: Object.values(stats.ageBuckets), color: '#6366F1' },
             ]} height={200} />
           </div>
         </div>
@@ -293,12 +319,12 @@ export default function Dashboard() {
               </tr></thead>
               <tbody className="divide-y divide-gray-50">
                 {stats.platformStats.slice(0, 15).map((p) => (
-                  <tr key={p.platform} onClick={() => openDrill(`${p.platform} — All Shipments`, p.allRows)} className="hover:bg-blue-50/40 cursor-pointer transition-colors">
-                    <td className="px-3 py-2 font-medium text-blue-700 underline underline-offset-2 decoration-blue-200">{p.platform}</td>
-                    <td className="px-3 py-2 text-gray-600">{p.total.toLocaleString('en-IN')}</td>
-                    <td className="px-3 py-2"><span className="text-emerald-600 font-medium">{p.delivered.toLocaleString('en-IN')}</span></td>
-                    <td className="px-3 py-2"><span className="text-red-500 font-medium">{p.rto.toLocaleString('en-IN')}</span></td>
-                    <td className="px-3 py-2 text-gray-600">{p.inTransit.toLocaleString('en-IN')}</td>
+                  <tr key={p.platform} className="hover:bg-blue-50/40 transition-colors">
+                    <td className="px-3 py-2 font-medium text-blue-700 underline underline-offset-2 decoration-blue-200 cursor-pointer" onClick={() => drillPlatform(p.platform, 'all')}>{p.platform}</td>
+                    <td className="px-3 py-2 text-gray-600 cursor-pointer" onClick={() => drillPlatform(p.platform, 'all')}>{p.total.toLocaleString('en-IN')}</td>
+                    <td className="px-3 py-2 cursor-pointer" onClick={() => drillPlatform(p.platform, 'delivered')}><span className="text-emerald-600 font-medium underline underline-offset-2 decoration-emerald-200">{p.delivered.toLocaleString('en-IN')}</span></td>
+                    <td className="px-3 py-2 cursor-pointer" onClick={() => drillPlatform(p.platform, 'rto')}><span className="text-red-500 font-medium underline underline-offset-2 decoration-red-200">{p.rto.toLocaleString('en-IN')}</span></td>
+                    <td className="px-3 py-2 cursor-pointer" onClick={() => drillPlatform(p.platform, 'intransit')}><span className="text-indigo-600 underline underline-offset-2 decoration-indigo-200">{p.inTransit.toLocaleString('en-IN')}</span></td>
                     <td className="px-3 py-2"><span className={`badge ${p.delPercent >= 80 ? 'badge-green' : p.delPercent >= 50 ? 'badge-yellow' : 'badge-red'}`}>{p.delPercent}%</span></td>
                     <td className="px-3 py-2 text-gray-600">{currency(p.cost)}</td>
                   </tr>
@@ -313,7 +339,7 @@ export default function Dashboard() {
           <div className="bg-white rounded-xl border border-red-100/80 overflow-hidden" style={{ boxShadow: '0 1px 3px rgba(239,68,68,0.06)' }}>
             <div className="px-3 py-2 border-b border-red-100 bg-red-50/40">
               <h3 className="text-[11px] font-semibold text-red-700 flex items-center gap-1.5">
-                <XCircle className="w-3.5 h-3.5 text-red-500" /> Failure Reasons — Platforms below 100% Delivery
+                <XCircle className="w-3.5 h-3.5 text-red-500" /> Failure Reasons — Platforms with Failed Shipments
                 <span className="text-[9px] text-red-400 ml-1">(click to expand reasons, click reason for detail)</span>
               </h3>
             </div>
@@ -331,7 +357,6 @@ export default function Dashboard() {
                 <tbody className="divide-y divide-gray-50">
                   {failurePlatforms.slice(0, 20).map((p) => {
                     const isExp = expandedPlatform === p.platform;
-                    const notDel = p.total - p.delivered;
                     const topReason = p.failureReasons.length > 0 ? p.failureReasons[0][0] : '-';
                     return (
                       <React.Fragment key={p.platform}>
@@ -340,7 +365,7 @@ export default function Dashboard() {
                           <td className="px-3 py-2 font-medium text-gray-800">{p.platform}</td>
                           <td className="px-3 py-2 text-gray-600">{p.total.toLocaleString('en-IN')}</td>
                           <td className="px-3 py-2 text-emerald-600 font-medium">{p.delivered.toLocaleString('en-IN')}</td>
-                          <td className="px-3 py-2 text-red-500 font-medium">{notDel.toLocaleString('en-IN')}</td>
+                          <td className="px-3 py-2 text-red-500 font-medium">{p.notDelivered.toLocaleString('en-IN')}</td>
                           <td className="px-3 py-2"><span className={`badge ${p.delPercent >= 80 ? 'badge-green' : p.delPercent >= 50 ? 'badge-yellow' : 'badge-red'}`}>{p.delPercent}%</span></td>
                           <td className="px-3 py-2 text-gray-600 truncate max-w-[200px]" title={topReason}>{topReason}</td>
                         </tr>
@@ -352,12 +377,13 @@ export default function Dashboard() {
                                   className="flex items-center justify-between text-[10px] py-0.5 px-2 rounded hover:bg-red-100/40 cursor-pointer transition-colors"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    const rows = p.allRows.filter((r) => {
+                                    const nonDeliveredRows = scopedData.filter(r => isKnownPlatform(r.platform) && r.platform === p.platform && !(isDelivered(r.status) || isPartialDelivered(r.status)));
+                                    const rows = nonDeliveredRows.filter((r) => {
                                       const rm = (r.failureRemarks || '').trim();
                                       if (reason === 'No remark available') return !rm || rm === 'NA' || rm === '-';
                                       return rm === reason;
                                     });
-                                    openDrill(`${p.platform} — ${reason}`, rows);
+                                    openDrill(`${p.platform} — ${reason} (Failed)`, rows);
                                   }}>
                                   <span className="text-gray-700 truncate mr-2">{reason}</span>
                                   <span className="text-red-600 font-semibold flex-shrink-0">{count}</span>
@@ -388,34 +414,39 @@ export default function Dashboard() {
           <div className="chart-container"><PieChart title="Appointment Status" labels={['With Appointment', 'Without Appointment']} data={[stats.withAppointment, stats.withoutAppointment]} height={200} /></div>
           <div className="kpi-card">
             <h3 className="text-[11px] font-semibold text-gray-700 mb-3">Appointment Summary</h3>
+            <p className="text-[9px] text-gray-400 -mt-2 mb-2">In-transit & OFD shipments only</p>
             <div className="space-y-2.5">
-              <div className="flex justify-between items-center"><span className="text-[11px] text-gray-600">Appointment Booked</span><span className="text-sm font-semibold">{stats.withAppointment.toLocaleString('en-IN')}</span></div>
-              <div className="flex justify-between items-center"><span className="text-[11px] text-gray-600">Non-Appointment</span><span className="text-sm font-semibold">{stats.withoutAppointment.toLocaleString('en-IN')}</span></div>
-              <div className="flex justify-between items-center pt-2 border-t border-gray-100"><span className="text-[11px] text-gray-600">Appointment %</span><span className="text-sm font-bold text-blue-600">{percent(stats.withAppointment, stats.total)}%</span></div>
+              <div className="flex justify-between items-center"><span className="text-[11px] text-gray-600">Appointment Booked</span><span className="text-sm font-semibold text-emerald-600">{stats.withAppointment.toLocaleString('en-IN')}</span></div>
+              <div className="flex justify-between items-center"><span className="text-[11px] text-gray-600">Non-Appointment</span><span className="text-sm font-semibold text-red-500">{stats.withoutAppointment.toLocaleString('en-IN')}</span></div>
+              <div className="flex justify-between items-center pt-2 border-t border-gray-100"><span className="text-[11px] text-gray-600">Appointment %</span><span className="text-sm font-bold text-blue-600">{percent(stats.withAppointment, stats.withAppointment + stats.withoutAppointment)}%</span></div>
             </div>
           </div>
         </div>
       )}
 
-      {view === 'Aged PO' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          <div className="chart-container"><BarChart title="Age Bucket Analysis" labels={Object.keys(stats.ageBuckets)} datasets={[{ label: 'Count', data: Object.values(stats.ageBuckets), color: '#8B5CF6' }]} height={200} /></div>
-          <div className="kpi-card">
-            <h3 className="text-[11px] font-semibold text-gray-700 mb-3">Aging Summary</h3>
-            <div className="space-y-2.5">
-              {Object.entries(stats.ageBuckets).map(([bucket, count]) => (
-                <div key={bucket} className="flex justify-between items-center">
-                  <span className="text-[11px] text-gray-600">{bucket}</span>
-                  <div className="flex items-center gap-2">
-                    <div className="w-20 h-1.5 bg-gray-100 rounded-full overflow-hidden"><div className="h-full bg-violet-500 rounded-full transition-all" style={{ width: `${percent(count, stats.total)}%` }} /></div>
-                    <span className="text-[11px] font-semibold w-10 text-right">{count.toLocaleString('en-IN')}</span>
+      {view === 'Aged PO' && (() => {
+        const ageBucketTotal = Object.values(stats.ageBuckets).reduce((a, b) => a + b, 0);
+        return (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <div className="chart-container"><BarChart title="Age Bucket Analysis" labels={Object.keys(stats.ageBuckets)} datasets={[{ label: 'Count', data: Object.values(stats.ageBuckets), color: '#8B5CF6' }]} height={200} /></div>
+            <div className="kpi-card">
+              <h3 className="text-[11px] font-semibold text-gray-700 mb-3">Aging Summary</h3>
+              <p className="text-[9px] text-gray-400 -mt-2 mb-2">In-transit & OFD shipments only</p>
+              <div className="space-y-2.5">
+                {Object.entries(stats.ageBuckets).map(([bucket, count]) => (
+                  <div key={bucket} className="flex justify-between items-center">
+                    <span className="text-[11px] text-gray-600">{bucket}</span>
+                    <div className="flex items-center gap-2">
+                      <div className="w-20 h-1.5 bg-gray-100 rounded-full overflow-hidden"><div className="h-full bg-violet-500 rounded-full transition-all" style={{ width: `${percent(count, ageBucketTotal || 1)}%` }} /></div>
+                      <span className="text-[11px] font-semibold w-10 text-right text-red-500">{count.toLocaleString('en-IN')}</span>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {view === 'RTO Analysis' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">

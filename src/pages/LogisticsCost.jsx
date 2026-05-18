@@ -87,17 +87,21 @@ function computeAggregates(rows) {
 function computeGroupStats(rows, groupKey) {
   const groups = groupBy(rows, groupKey);
   return Object.entries(groups).map(([label, gRows]) => {
-    const totalInv = gRows.reduce((s, r) => s + r.invoiceNum, 0);
-    const totalCost = gRows.reduce((s, r) => s + r.costNum, 0);
-    const costPct = totalInv > 0 ? (totalCost / totalInv) * 100 : 0;
-    const pcts = gRows.map((r) => r.costPct);
+    let totalInv = 0, totalCost = 0;
     const months = {};
-    for (const r of gRows) {
-      if (!r.month) continue;
-      if (!months[r.month]) months[r.month] = { inv: 0, cost: 0 };
-      months[r.month].inv += r.invoiceNum;
-      months[r.month].cost += r.costNum;
+    const pcts = new Array(gRows.length);
+    for (let i = 0; i < gRows.length; i++) {
+      const r = gRows[i];
+      totalInv += r.invoiceNum;
+      totalCost += r.costNum;
+      pcts[i] = r.costPct;
+      if (r.month) {
+        if (!months[r.month]) months[r.month] = { inv: 0, cost: 0 };
+        months[r.month].inv += r.invoiceNum;
+        months[r.month].cost += r.costNum;
+      }
     }
+    const costPct = totalInv > 0 ? (totalCost / totalInv) * 100 : 0;
     const monthTrend = Object.entries(months).map(([m, v]) => ({ month: m, pct: v.inv > 0 ? (v.cost / v.inv) * 100 : 0 }));
     return { label, totalInv, totalCost, costPct, count: gRows.length, std: stdDev(pcts), monthTrend, rows: gRows };
   }).sort((a, b) => b.costPct - a.costPct);

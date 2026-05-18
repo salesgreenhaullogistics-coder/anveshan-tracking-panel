@@ -29,7 +29,7 @@ const SUB_TABS = [
 // ─── Date Parsing ────────────────────────────────────────────────────────────
 
 function parseDateCol(key) {
-  if (!key || key === 'L' || key === '') return null;
+  if (!key || key.trim() === '' || key === 'L' || key === 'KPI' || key === 'Owner') return null;
   const d = new Date(key);
   return isNaN(d.getTime()) ? null : d;
 }
@@ -100,8 +100,8 @@ function parseApiData(raw) {
   let current = null;
 
   raw.forEach(row => {
-    const owner = (row.L || '').trim();
-    const kpi = (row[''] || '').trim();
+    const owner = (row[' '] || row.L || '').trim();
+    const kpi = (row[''] || row.KPI || '').trim();
     if (owner === 'Owner' || (!owner && !kpi)) return;
     if (owner && owner !== '') {
       current = { name: owner, kpis: [] };

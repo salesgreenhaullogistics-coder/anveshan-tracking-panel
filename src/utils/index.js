@@ -3,10 +3,13 @@ import { format, differenceInDays, parseISO, isValid } from 'date-fns';
 
 // ── API ──────────────────────────────────────────────────────────────────────
 
+const DIRECT_API_URL =
+  'https://script.google.com/macros/s/AKfycbzu8zSSmcPeuMAxUdDylahx7UuNBmMXWYd8W1wCVptdR0oUVLEIrYJiz37TRW_qPk2kQA/exec';
+
 let dataCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000;
 
-function fetchWithTimeout(url, options = {}, timeoutMs = 60000) {
+function fetchWithTimeout(url, options = {}, timeoutMs = 120000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
@@ -41,6 +44,7 @@ export async function fetchShipmentData(options = {}) {
 
   const attempts = [
     () => fetchWithTimeout(`/api?${query.toString()}`, { redirect: 'follow' }),
+    () => fetchWithTimeout(`${DIRECT_API_URL}?${query.toString()}`, { redirect: 'follow' }),
   ];
 
   let lastErr;
@@ -68,17 +72,21 @@ export async function searchShipments(query, options = {}) {
   });
   if (forceRefresh) params.set('refresh', '1');
 
-  const url = `/api?${params.toString()}`;
+  const urls = [`/api?${params.toString()}`, `${DIRECT_API_URL}?${params.toString()}`];
 
-  try {
-    const res = await fetchWithTimeout(url, { redirect: 'follow' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-    const json = await res.json();
-    return json || { data: [], total: 0, query };
-  } catch (err) {
-    console.error('Search API error:', err);
-    throw err;
+  let lastErr;
+  for (const url of urls) {
+    try {
+      const res = await fetchWithTimeout(url, { redirect: 'follow' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      const json = await res.json();
+      return json || { data: [], total: 0, query };
+    } catch (err) {
+      lastErr = err;
+    }
   }
+  console.error('Search API error:', lastErr);
+  throw lastErr;
 }
 
 export async function fetchSearchSuggestions(query, options = {}) {
@@ -89,17 +97,21 @@ export async function fetchSearchSuggestions(query, options = {}) {
     limit: String(limit),
   });
 
-  const url = `/api?${params.toString()}`;
+  const urls = [`/api?${params.toString()}`, `${DIRECT_API_URL}?${params.toString()}`];
 
-  try {
-    const res = await fetchWithTimeout(url, { redirect: 'follow' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-    const json = await res.json();
-    return json || { suggestions: [] };
-  } catch (err) {
-    console.error('Suggestions API error:', err);
-    throw err;
+  let lastErr;
+  for (const url of urls) {
+    try {
+      const res = await fetchWithTimeout(url, { redirect: 'follow' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      const json = await res.json();
+      return json || { suggestions: [] };
+    } catch (err) {
+      lastErr = err;
+    }
   }
+  console.error('Suggestions API error:', lastErr);
+  throw lastErr;
 }
 
 // ── Fuzzy Status Matching ────────────────────────────────────────────────────
@@ -183,7 +195,8 @@ const RTO_DELIVERED_PATTERNS = [
 const RTO_INTRANSIT_PATTERNS = [
   'rto - pending for delivery', 'rto - in transit', 'rto - pending with gracious',
   'rto - ofd', 'rto - document pending', 'rto-intransit', 'rto - documents received',
-  'rto in transit', 'rto intransit', 'rto pending',
+  'rto in transit', 'rto intransit', 'rto pending', 'rto - connection pending',
+  'rto connection pending',
 ];
 const RTO_PARTIAL_PATTERNS = [
   'partial rto delivered', 'partially delivered - rto', 'partial delivered - rto', 'rto partial',

@@ -4,7 +4,7 @@ import DataTable from '../components/DataTable';
 import KPICard from '../components/KPICard';
 import { PieChart } from '../components/Charts';
 import { Calendar, CalendarCheck, CalendarX, CalendarClock } from 'lucide-react';
-import { safeParseDate, formatDate } from '../utils/index';
+import { safeParseDate, formatDate, isInTransit, isOFD } from '../utils/index';
 import { format, isToday } from 'date-fns';
 
 const SUB_TABS = ['Appointment Booked', 'Non Appointment', 'Today Appointment', 'Request Appointment'];
@@ -27,13 +27,16 @@ export default function Appointment() {
   const { data } = useData();
   const [subTab, setSubTab] = useState('Appointment Booked');
 
+  /* Only include in-transit / OFD shipments — exclude delivered, RTO, lost */
+  const inTransitData = useMemo(() => data.filter((r) => isInTransit(r.status) || isOFD(r.status)), [data]);
+
   const categorized = useMemo(() => {
     const booked = [];
     const nonAppointment = [];
     const todayAppt = [];
     const requestAppt = [];
 
-    data.forEach((row) => {
+    inTransitData.forEach((row) => {
       const apptDate = safeParseDate(row.appointmentDate);
       if (apptDate) {
         booked.push(row);
@@ -48,9 +51,9 @@ export default function Appointment() {
     });
 
     return { booked, nonAppointment, todayAppt, requestAppt };
-  }, [data]);
+  }, [inTransitData]);
 
-  const activeData = useMemo(() => {
+  const filteredActiveData = useMemo(() => {
     switch (subTab) {
       case 'Appointment Booked': return categorized.booked;
       case 'Non Appointment': return categorized.nonAppointment;
@@ -91,7 +94,7 @@ export default function Appointment() {
             ))}
           </div>
           <DataTable
-            data={activeData}
+            data={filteredActiveData}
             columns={COLUMNS}
             exportFilename={`appointment-${subTab.toLowerCase().replace(/\s/g, '-')}`}
           />

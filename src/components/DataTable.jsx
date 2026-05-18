@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useCallback } from 'react';
 import { Search, ChevronUp, ChevronDown, ChevronsUpDown, Download, ChevronLeft, ChevronRight } from 'lucide-react';
 import { exportToExcel } from '../utils/index';
 
@@ -11,18 +11,26 @@ export default function DataTable({
   emptyMessage = 'No data found',
 }) {
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [sortKey, setSortKey] = useState(null);
   const [sortDir, setSortDir] = useState('asc');
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(defaultPageSize);
+  const debounceRef = useRef(null);
+
+  const handleSearch = useCallback((val) => {
+    setSearch(val);
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => { setDebouncedSearch(val); setPage(0); }, 250);
+  }, []);
 
   const searched = useMemo(() => {
-    if (!search.trim()) return data;
-    const q = search.toLowerCase();
+    if (!debouncedSearch.trim()) return data;
+    const q = debouncedSearch.toLowerCase();
     return data.filter((row) =>
       columns.some((col) => String(row[col.key] || '').toLowerCase().includes(q))
     );
-  }, [data, search, columns]);
+  }, [data, debouncedSearch, columns]);
 
   const sorted = useMemo(() => {
     if (!sortKey) return searched;
@@ -62,7 +70,7 @@ export default function DataTable({
             type="text"
             placeholder="Search records..."
             value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(0); }}
+            onChange={(e) => handleSearch(e.target.value)}
             className="w-full pl-8 pr-3 py-1.5 border border-gray-200 rounded-lg text-[11px] focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 bg-white"
           />
         </div>

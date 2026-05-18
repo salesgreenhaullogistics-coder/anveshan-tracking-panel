@@ -10,6 +10,7 @@ import Appointment from './pages/Appointment';
 import AgedPOs from './pages/AgedPOs';
 import LostShipments from './pages/LostShipments';
 import PrepullAged from './pages/PrepullAged';
+import AgingMonitor from './pages/AgingMonitor';
 import Delivered from './pages/Delivered';
 import ReturnModule from './pages/ReturnModule';
 import PODs from './pages/PODs';
@@ -20,22 +21,24 @@ import LogisticsCost from './pages/LogisticsCost';
 import POCDetails from './pages/POCDetails';
 import PlatformSOP from './pages/PlatformSOP';
 import Provision from './pages/Provision';
+import Analytics from './pages/Analytics';
+import AllLRs from './pages/AllLRs';
 import { Loader2, Database } from 'lucide-react';
 
 const PAGE_MAP = {
-  dashboard: Dashboard, intransit: InTransit, ofd: OFD,
+  dashboard: Dashboard, 'all-lrs': AllLRs, intransit: InTransit, ofd: OFD,
   appointment: Appointment, 'aged-pos': AgedPOs, lost: LostShipments,
-  prepull: PrepullAged, delivered: Delivered, return: ReturnModule,
+  prepull: PrepullAged, 'aging-monitor': AgingMonitor, delivered: Delivered, return: ReturnModule,
   pods: PODs, grn: GRN, kpi: KPIMatrix, okr: OKR,
-  cost: LogisticsCost, poc: POCDetails, sop: PlatformSOP, provision: Provision,
+  cost: LogisticsCost, analytics: Analytics, poc: POCDetails, sop: PlatformSOP, provision: Provision,
 };
 
 const TAB_TITLES = {
-  dashboard: 'Dashboard', intransit: 'In-Transit', ofd: 'Out for Delivery',
+  dashboard: 'Dashboard', 'all-lrs': 'All LRs', intransit: 'In-Transit', ofd: 'Out for Delivery',
   appointment: 'Appointment', 'aged-pos': "Aged PO's", lost: 'Lost Shipments',
-  prepull: 'Prepull Aged', delivered: 'Delivered', return: 'Return',
+  prepull: 'Prepull Aged', 'aging-monitor': 'Aging Monitor', delivered: 'Delivered', return: 'Return',
   pods: 'PODs', grn: 'GRN', kpi: 'KPI Matrix', okr: 'OKR',
-  cost: 'Logistics Cost', poc: 'POC Details', sop: 'Platform SOP', provision: 'Provision',
+  cost: 'Logistics Cost', analytics: 'Analytics', poc: 'POC Details', sop: 'Platform SOP', provision: 'Provision & Billing',
 };
 
 export default function App() {

@@ -15,6 +15,7 @@ import {
 } from '../utils/index';
 
 const KPI_OWNERS = [
+  { key: 'all', name: 'All Owners', role: 'Combined KPI View', icon: BarChart3 },
   { key: 'sandeep', name: 'Sandeep', role: 'Commercial & Primary', icon: Truck },
   { key: 'prashant', name: 'Prashant', role: 'Last Mile & Return', icon: Building2 },
   { key: 'nandlal', name: 'Nandlal', role: 'Documentation & GRN', icon: FileText },
@@ -40,6 +41,94 @@ function getGrade(pct) {
   return { label: 'Below', color: 'text-red-700 bg-red-50 border-red-200', bar: 'bg-red-500' };
 }
 
+/* ─── KPI name → kpiType + filter classifier ──────────────────────────────
+   Each KPI's drill-down must scope shipments to the SAME population the
+   KPI measures. Order matters: most-specific first.                   */
+function classifyKPI(kn, mRows, now) {
+  let kpiType = 'general', filtered = mRows, excludedCount = 0, note = null;
+
+  /* Cost — exclude rows with missing invoice (would skew % calc) */
+  if (kn.includes('cost')) {
+    kpiType = 'cost';
+    const costAll = mRows.filter(r => parseFloat(r.logisticsCost) > 0);
+    filtered = costAll.filter(r => parseFloat(r.invoiceValue) > 0);
+    excludedCount = costAll.length - filtered.length;
+    return { kpiType, filtered, excludedCount, note };
+  }
+
+  /* RTO-aging — RTO shipments with age buckets */
+  if ((kn.includes('rto') && (kn.includes('aging') || kn.includes('ageing'))) || kn.includes('rto ageing') || kn.includes('rto aging')) {
+    kpiType = 'rto-aging';
+    filtered = mRows.filter(r => isRTO(r.status));
+    return { kpiType, filtered, excludedCount, note };
+  }
+
+  /* In-Transit Aging — ALL in-transit/OFD shipments */
+  if (kn.includes('transit') && (kn.includes('aging') || kn.includes('ageing'))) {
+    kpiType = 'transit';
+    filtered = mRows.filter(r => isInTransit(r.status) || isOFD(r.status));
+    return { kpiType, filtered, excludedCount, note };
+  }
+
+  /* Generic RTO */
+  if (kn.includes('rto') || kn.includes('b2b rto')) {
+    kpiType = 'rto';
+    filtered = mRows.filter(r => isRTO(r.status));
+    return { kpiType, filtered, excludedCount, note };
+  }
+
+  /* Platform OTIF / Channel Delivery */
+  if (kn.includes('otif') || kn.includes('channel del') || kn.includes('platform otif')) {
+    kpiType = 'platform';
+    return { kpiType, filtered, excludedCount, note };
+  }
+
+  /* Delivery / First-attempt */
+  if (kn.includes('delivery success') || kn.includes('first attempt') || kn === 'delivery success %') {
+    kpiType = 'delivery';
+    return { kpiType, filtered, excludedCount, note };
+  }
+
+  /* POD aging variations */
+  if (kn.includes('pod')) {
+    kpiType = 'pod';
+    /* Delivered shipments missing POD */
+    filtered = mRows.filter(r => (isDelivered(r.status) || isPartialDelivered(r.status)) && !(r.pod && r.pod.trim() !== '' && r.pod.trim() !== '-'));
+    return { kpiType, filtered, excludedCount, note };
+  }
+
+  /* Appointment KPIs */
+  if (kn.includes('appt') || kn.includes('appointment')) {
+    kpiType = 'appt';
+    filtered = mRows.filter(r => (isInTransit(r.status) || isOFD(r.status)) && !safeParseDate(r.appointmentDate));
+    return { kpiType, filtered, excludedCount, note };
+  }
+
+  /* GRN — no shipment-level data; show month rows with a note */
+  if (kn.includes('grn')) {
+    kpiType = 'grn';
+    note = 'GRN data is tracked separately from shipment records. The list below shows all shipments for the month for context only — GRN status is not captured per shipment yet.';
+    return { kpiType, filtered: mRows, excludedCount, note };
+  }
+
+  /* Dispatch & Pickup — same-day dispatch view (booking date present) */
+  if (kn.includes('dispatch') || kn.includes('pickup')) {
+    kpiType = 'dispatch';
+    filtered = mRows.filter(r => safeParseDate(r.bookingDate));
+    note = 'Showing all shipments dispatched in the month. Same-day dispatch & pickup-compliance metrics are derived from booking dates.';
+    return { kpiType, filtered, excludedCount, note };
+  }
+
+  /* Quality / WH / Doc — non-shipment KPIs, manual-only */
+  if (kn.includes('quality') || kn.includes('wh capacity') || kn.includes('capacity') || kn.includes('doc issue') || kn.includes('packaging') || kn.includes('label')) {
+    kpiType = 'manual';
+    note = 'This is a manually-tracked KPI without per-shipment data. Use the month value above; the table below is for reference only.';
+    return { kpiType, filtered: mRows, excludedCount, note };
+  }
+
+  return { kpiType, filtered, excludedCount, note };
+}
+
 function scorePct(actual, target, base, exceptional, invert) {
   if (actual == null) return 50;
   if (invert) return actual <= exceptional ? 100 : actual <= target ? 80 : actual <= base ? 60 : 30;
@@ -48,7 +137,7 @@ function scorePct(actual, target, base, exceptional, invert) {
 
 export default function OKR() {
   const { data } = useData();
-  const [owner, setOwner] = useState('sandeep');
+  const [owner, setOwner] = useState('all');
   const [view, setView] = useState('executive');
   const [expKPI, setExpKPI] = useState(null);
   const [period, setPeriod] = useState('Monthly');
@@ -218,6 +307,15 @@ export default function OKR() {
         { name: 'WH Capacity Utilization', w: 15, actual: 78, target: 80, base: 70, high: 85, exc: 90, unit: '%' },
       ],
     };
+    if (owner === 'all') {
+      /* Combine all owners' KPIs with owner tag */
+      const allKpis = [];
+      Object.entries(defs).forEach(([ownerKey, ownerKpis]) => {
+        const ownerInfo = KPI_OWNERS.find(o => o.key === ownerKey);
+        ownerKpis.forEach(k => allKpis.push({ ...k, _owner: ownerKey, _ownerName: ownerInfo?.name || ownerKey }));
+      });
+      return allKpis;
+    }
     return defs[owner] || [];
   }, [actuals, owner]);
 
@@ -229,6 +327,21 @@ export default function OKR() {
   }, [kpis]);
 
   const grade = getGrade(overallScore);
+
+  /* Per-owner scores for "All" combined view */
+  const allOwnerScores = useMemo(() => {
+    if (owner !== 'all') return [];
+    const ownerKeys = ['sandeep','prashant','nandlal','anoop'];
+    return ownerKeys.map(oKey => {
+      const ownerKpis = kpis.filter(k => k._owner === oKey);
+      let tw = 0, ws = 0;
+      ownerKpis.forEach(k => { const s = scorePct(k.actual, k.target, k.base, k.exc, k.inv); tw += k.w; ws += s * k.w / 100; });
+      const score = tw > 0 ? Math.round(ws / tw * 100) : 0;
+      const info = KPI_OWNERS.find(o => o.key === oKey);
+      const atRisk = ownerKpis.filter(k => { const gap = k.inv ? k.actual - k.target : k.target - k.actual; return gap > 0; }).length;
+      return { key: oKey, name: info?.name || oKey, role: info?.role || '', score, grade: getGrade(score), kpiCount: ownerKpis.length, atRisk };
+    });
+  }, [owner, kpis]);
 
 
   /* ═══ AI Root Cause ═══ */
@@ -280,12 +393,38 @@ export default function OKR() {
       {/* Header */}
       <div className="bg-gradient-to-r from-indigo-600 to-purple-700 rounded-xl p-5 text-white">
         <div className="flex items-center justify-between">
-          <div><h2 className="text-lg font-bold">{cur?.name}'s KPI Command Center</h2><p className="text-indigo-200 text-[11px]">{cur?.role}</p></div>
+          <div><h2 className="text-lg font-bold">{owner === 'all' ? 'KPI Command Center — All Owners' : `${cur?.name}'s KPI Command Center`}</h2><p className="text-indigo-200 text-[11px]">{owner === 'all' ? 'Combined performance across all KPI owners' : cur?.role}</p></div>
           <div className="flex items-center gap-6">
             <div className="text-center"><p className="text-3xl font-bold">{overallScore}</p><span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${grade.color}`}>{grade.label}</span></div>
             {forecast && <div className="text-center"><p className="text-xl font-bold">{forecast.nextMonth}%</p><p className="text-[9px] text-indigo-200">Next Month Forecast</p><span className={`text-[9px] px-1.5 py-0.5 rounded ${forecast.risk === 'HIGH' ? 'bg-red-500' : forecast.risk === 'MEDIUM' ? 'bg-amber-500' : 'bg-emerald-500'}`}>{forecast.risk} Risk</span></div>}
           </div>
         </div>
+        {/* Owner score cards in All view */}
+        {owner === 'all' && allOwnerScores.length > 0 && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+            {allOwnerScores.map(os => (
+              <button key={os.key} onClick={() => { setOwner(os.key); setExpKPI(null); }}
+                className="bg-white/10 backdrop-blur-sm rounded-xl p-3 text-left hover:bg-white/20 transition-all">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-bold">{os.name}</p>
+                    <p className="text-[9px] text-indigo-200">{os.role}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-2xl font-bold">{os.score}</p>
+                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${os.grade.color}`}>{os.grade.label}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 mt-2 text-[9px]">
+                  <span className="text-indigo-200">{os.kpiCount} KPIs</span>
+                  {os.atRisk > 0 && <span className="bg-red-500/30 text-red-200 px-1.5 py-0.5 rounded">{os.atRisk} at risk</span>}
+                  {os.atRisk === 0 && <span className="bg-emerald-500/30 text-emerald-200 px-1.5 py-0.5 rounded">All on target</span>}
+                </div>
+                <div className="w-full h-1.5 bg-white/10 rounded-full mt-2 overflow-hidden"><div className={`h-full rounded-full ${os.grade.bar}`} style={{ width: `${Math.min(100, os.score)}%` }} /></div>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* View tabs */}
@@ -308,6 +447,44 @@ export default function OKR() {
         {/* KPI Health Grid */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
           <h3 className="text-sm font-semibold text-gray-700 mb-3">KPI Health Overview</h3>
+          {owner === 'all' ? (
+            /* Grouped by owner */
+            <div className="space-y-4">
+              {['sandeep','prashant','nandlal','anoop'].map(oKey => {
+                const ownerKpis = kpis.filter(k => k._owner === oKey);
+                const oInfo = KPI_OWNERS.find(o => o.key === oKey);
+                const oScore = allOwnerScores.find(s => s.key === oKey);
+                return (
+                  <div key={oKey}>
+                    <div className="flex items-center gap-2 mb-2">
+                      <button onClick={() => { setOwner(oKey); setExpKPI(null); }} className="text-[11px] font-bold text-indigo-700 hover:underline">{oInfo?.name}</button>
+                      <span className="text-[9px] text-gray-400">{oInfo?.role}</span>
+                      {oScore && <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ml-auto ${oScore.grade.color}`}>{oScore.score} — {oScore.grade.label}</span>}
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
+                      {ownerKpis.map(k => {
+                        const s = scorePct(k.actual, k.target, k.base, k.exc, k.inv);
+                        const g = getGrade(s);
+                        const gap = k.inv ? k.actual - k.target : k.target - k.actual;
+                        const isBelow = gap > 0;
+                        return (
+                          <div key={k.name} className={`p-2.5 rounded-xl border ${g.color} text-left`}>
+                            <p className="text-[10px] font-semibold truncate">{k.name}</p>
+                            <div className="flex items-end justify-between mt-1">
+                              <p className="text-base font-bold">{fmt(k.actual)}{k.unit}</p>
+                              <span className="text-[9px] font-bold">{g.label}</span>
+                            </div>
+                            <div className="w-full h-1.5 bg-gray-200 rounded-full mt-1 overflow-hidden"><div className={`h-full rounded-full ${g.bar}`} style={{ width: `${Math.min(100, s)}%` }} /></div>
+                            <p className="text-[9px] text-gray-500 mt-1">T: {fmt(k.target)}{k.unit} {isBelow ? <span className="text-red-500">({k.inv?'+':'-'}{fmt(gap)}{k.unit})</span> : <span className="text-emerald-500">Met</span>}</p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
             {kpis.map(k => {
               const s = scorePct(k.actual, k.target, k.base, k.exc, k.inv);
@@ -342,6 +519,7 @@ export default function OKR() {
               );
             })}
           </div>
+          )}
           {/* Plan of Action for selected KPI */}
           {expKPI && (() => {
             const k = kpis.find(x => x.name === expKPI);
@@ -455,6 +633,7 @@ export default function OKR() {
           <div className="px-4 py-3 border-b border-gray-100"><h3 className="text-sm font-semibold text-gray-700">KPI Performance Matrix</h3></div>
           <div className="overflow-x-auto"><table className="w-full text-[11px]">
             <thead><tr className="bg-gray-50 border-b border-gray-200">
+              {owner === 'all' && <th className="px-3 py-2 text-left font-semibold text-gray-500 uppercase">Owner</th>}
               <th className="px-3 py-2 text-left font-semibold text-gray-500 uppercase">KPI</th>
               <th className="px-3 py-2 text-right font-semibold text-gray-500 uppercase">Weight</th>
               <th className="px-3 py-2 text-right font-semibold text-gray-500 uppercase">Base</th>
@@ -468,6 +647,7 @@ export default function OKR() {
             <tbody className="divide-y divide-gray-50">
               {kpis.map((k, i) => { const s = scorePct(k.actual, k.target, k.base, k.exc, k.inv); const g = getGrade(s); const gap = k.inv ? k.actual - k.target : k.target - k.actual; return (
                 <tr key={i} className="hover:bg-gray-50">
+                  {owner === 'all' && <td className="px-3 py-2 text-[10px] font-medium text-indigo-600">{k._ownerName}</td>}
                   <td className="px-3 py-2 font-semibold text-gray-800">{k.name}</td>
                   <td className="px-3 py-2 text-right text-indigo-600 font-semibold">{k.w}%</td>
                   <td className="px-3 py-2 text-right text-gray-500">{fmt(k.base)}{k.unit}</td>
@@ -609,12 +789,13 @@ autoActuals[m]['Non-Appointment %'] = total > 0 ? parseFloat(percent(intransit.f
         <div className="space-y-4">
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-100">
-            <h3 className="text-sm font-semibold text-gray-700">{period} Tracking — {cur?.name}</h3>
+            <h3 className="text-sm font-semibold text-gray-700">{period} Tracking — {owner === 'all' ? 'All Owners' : cur?.name}</h3>
             <p className="text-[10px] text-gray-400">Auto-filled from shipment data. Edit if incorrect. Lock after verification.</p>
           </div>
           <div className="overflow-x-auto"><table className="w-full text-[10px]">
             <thead><tr className="bg-gray-50 border-b border-gray-200">
-              <th className="px-3 py-2 text-left font-semibold text-gray-600 sticky left-0 bg-gray-50 z-10 min-w-[160px]">KPI</th>
+              {owner === 'all' && <th className="px-2 py-2 text-left font-semibold text-gray-600 sticky left-0 bg-gray-50 z-10 min-w-[80px]">Owner</th>}
+              <th className={`px-3 py-2 text-left font-semibold text-gray-600 ${owner === 'all' ? '' : 'sticky left-0 bg-gray-50 z-10'} min-w-[160px]`}>KPI</th>
               <th className="px-2 py-2 text-center font-semibold text-blue-600 w-14">Target</th>
               {trackCols.map(m => { const locked = lockedMonths[`${owner}||${m}`]; return (
                 <th key={m} className="px-1 py-2 text-center font-semibold text-gray-500 min-w-[80px]"><div>{m}</div><button onClick={() => toggleLock(m)} className={`mt-0.5 p-0.5 rounded ${locked ? 'text-emerald-500' : 'text-gray-300 hover:text-gray-500'}`}>{locked ? <Lock className="w-3 h-3" /> : <Unlock className="w-3 h-3" />}</button></th>
@@ -623,46 +804,32 @@ autoActuals[m]['Non-Appointment %'] = total > 0 ? parseFloat(percent(intransit.f
             <tbody className="divide-y divide-gray-50">
               {kpis.map((k, ki) => (
                 <tr key={ki} className="hover:bg-gray-50/50">
-                  <td className="px-3 py-1.5 font-medium text-gray-700 sticky left-0 bg-white z-10 border-r border-gray-100 text-[10px]">{k.name}</td>
+                  {owner === 'all' && <td className="px-2 py-1.5 text-[9px] font-medium text-indigo-600 border-r border-gray-100">{k._ownerName}</td>}
+                  <td className={`px-3 py-1.5 font-medium text-gray-700 ${owner === 'all' ? '' : 'sticky left-0 bg-white z-10'} border-r border-gray-100 text-[10px]`}>{k.name}</td>
                   <td className="px-2 py-1.5 text-center text-blue-600 font-semibold border-r border-blue-100 bg-blue-50/30">{fmt(k.target)}{k.unit}</td>
                   {trackCols.map(m => {
-                    const key = `${owner}||${m}||${k.name}`;
+                    const trackOwner = owner === 'all' ? k._owner : owner;
+                    const key = `${trackOwner}||${m}||${k.name}`;
                     const manualVal = trackingData[key];
                     const autoVal = autoActuals[m]?.[k.name];
                     const displayVal = manualVal || (autoVal != null ? String(autoVal) : '');
                     const isAuto = !manualVal && autoVal != null;
-                    const locked = lockedMonths[`${owner}||${m}`];
+                    const locked = lockedMonths[`${trackOwner}||${m}`];
                     const nv = parseFloat(displayVal);
                     const met = !isNaN(nv) && (k.inv ? nv <= k.target : nv >= k.target);
                     const doDrill = () => {
                       const mRows = byMonth[m] || [];
                       if (mRows.length === 0) return;
-                      let filtered = mRows;
                       const kn = k.name.toLowerCase();
-                      let kpiType = 'general';
-                      let excludedCount = 0;
-                      if (kn.includes('cost')) {
-                        kpiType = 'cost';
-                        const costAll = mRows.filter(r => parseFloat(r.logisticsCost) > 0);
-                        filtered = costAll.filter(r => parseFloat(r.invoiceValue) > 0);
-                        excludedCount = costAll.length - filtered.length;
-                      }
-                      else if (kn.includes('transit 0-7')) { kpiType = 'transit'; filtered = mRows.filter(r => (isInTransit(r.status)||isOFD(r.status)) && safeParseDate(r.bookingDate) && Math.floor((now-safeParseDate(r.bookingDate))/86400000)<=7); }
-                      else if (kn.includes('transit 8-15')) { kpiType = 'transit'; filtered = mRows.filter(r => { if (!(isInTransit(r.status)||isOFD(r.status))) return false; const bd = safeParseDate(r.bookingDate); if (!bd) return false; const age = Math.floor((now-bd)/86400000); return age > 7 && age <= 15; }); }
-                      else if (kn.includes('transit 30')) { kpiType = 'transit'; filtered = mRows.filter(r => (isInTransit(r.status)||isOFD(r.status)) && safeParseDate(r.bookingDate) && Math.floor((now-safeParseDate(r.bookingDate))/86400000)>30); }
-                      else if (kn.includes('rto')) { kpiType = 'rto'; filtered = mRows.filter(r => isRTO(r.status)); }
-                      else if (kn.includes('otif') || kn.includes('channel del')) { kpiType = 'platform'; const pl = k.name.split('—')[1]?.trim(); if (pl) filtered = mRows.filter(r => r.platform && r.platform.toLowerCase().includes(pl.toLowerCase())); }
-                      else if (kn.includes('delivery success') || kn.includes('first attempt')) { kpiType = 'delivery'; filtered = mRows.filter(r => isDelivered(r.status)||isPartialDelivered(r.status)); }
-                      else if (kn.includes('pod')) { kpiType = 'pod'; filtered = mRows.filter(r => (isDelivered(r.status)||isPartialDelivered(r.status)) && !(r.pod && r.pod.trim() !== '' && r.pod.trim() !== '-')); }
-                      else if (kn.includes('appt') || kn.includes('non-appt')) { kpiType = 'appt'; filtered = mRows.filter(r => (isInTransit(r.status)||isOFD(r.status)) && !safeParseDate(r.appointmentDate)); }
-                      setTrackDrill({ title: `${k.name} — ${m} (${filtered.length} records)`, data: filtered, kpiType, kpiName: k.name, month: m, excludedCount });
+                      const { kpiType, filtered, excludedCount, note } = classifyKPI(kn, mRows, now);
+                      setTrackDrill({ title: `${k.name} — ${m} (${filtered.length} records)`, data: filtered, kpiType, kpiName: k.name, month: m, excludedCount, note });
                     };
                     return (
                     <td key={m} className={`px-1 py-1 text-center ${displayVal && !isNaN(nv) ? (met ? 'bg-emerald-50/50' : 'bg-red-50/50') : ''}`}>
                       <div className="flex items-center gap-0.5">
                         {locked
                           ? <span className={`flex-1 font-semibold ${displayVal && !isNaN(nv) ? (met ? 'text-emerald-700' : 'text-red-600') : 'text-gray-400'}`}>{displayVal || '-'}</span>
-                          : <input type="text" value={displayVal} onChange={e => saveTrack(m, k.name, e.target.value)} className={`flex-1 text-center text-[10px] px-1 py-0.5 border rounded focus:border-indigo-400 outline-none ${isAuto ? 'border-indigo-200 bg-indigo-50/30' : 'border-gray-200'}`} placeholder="-" />
+                          : <input type="text" value={displayVal} onChange={e => { const tO = owner === 'all' ? k._owner : owner; setTrackingData(p => { const n = { ...p, [`${tO}||${m}||${k.name}`]: e.target.value }; localStorage.setItem('okr-track', JSON.stringify(n)); return n; }); }} className={`flex-1 text-center text-[10px] px-1 py-0.5 border rounded focus:border-indigo-400 outline-none ${isAuto ? 'border-indigo-200 bg-indigo-50/30' : 'border-gray-200'}`} placeholder="-" />
                         }
                         {displayVal && <button onClick={doDrill} className="p-0.5 rounded hover:bg-indigo-100 text-indigo-400 hover:text-indigo-600 flex-shrink-0" title="View raw data"><Eye className="w-3 h-3" /></button>}
                       </div>
@@ -742,7 +909,7 @@ autoActuals[m]['Non-Appointment %'] = total > 0 ? parseFloat(percent(intransit.f
       {/* ═══ AI ROOT CAUSE ═══ */}
       {view === 'rootcause' && (<div className="space-y-4">
         <div className="bg-red-50 border border-red-200 rounded-xl p-4">
-          <h3 className="text-sm font-bold text-red-800 flex items-center gap-2 mb-3"><Brain className="w-4 h-4" /> AI Root Cause Analysis — {cur?.name}</h3>
+          <h3 className="text-sm font-bold text-red-800 flex items-center gap-2 mb-3"><Brain className="w-4 h-4" /> AI Root Cause Analysis — {owner === 'all' ? 'All Owners' : cur?.name}</h3>
           {rootCauses.length === 0 ? <p className="text-[11px] text-emerald-600">All KPIs are on or above target!</p> : (
             <div className="space-y-3">
               {rootCauses.map((rc, i) => (
@@ -769,237 +936,652 @@ autoActuals[m]['Non-Appointment %'] = total > 0 ? parseFloat(percent(intransit.f
         )}
       </div>)}
 
-      {/* Drill-down Modal — context-aware per KPI type */}
-      {trackDrill && (() => {
-        const dd = trackDrill.data;
-        const kpiType = trackDrill.kpiType || 'general';
-        const isCost = kpiType === 'cost';
-        const isDel = kpiType === 'delivery' || kpiType === 'platform';
-        const isRto = kpiType === 'rto';
-        const isTransit = kpiType === 'transit';
-        const isPod = kpiType === 'pod';
-        const isAppt = kpiType === 'appt';
+      {/* Drill-down Modal — strictly context-aware per KPI type */}
+      {trackDrill && (
+        <TrackDrillModal
+          trackDrill={trackDrill}
+          onClose={() => setTrackDrill(null)}
+          setTrackDrill={setTrackDrill}
+          now={now}
+        />
+      )}
+    </div>
+  );
+}
 
-        const delC = dd.filter(r=>isDelivered(r.status)||isPartialDelivered(r.status)).length;
-        const rtoC = dd.filter(r=>isRTO(r.status)).length;
-        const intC = dd.filter(r=>isInTransit(r.status)||isOFD(r.status)).length;
-        const othC = dd.length - delC - rtoC - intC;
+/* ═══════════════════════════════════════════════════════════════════════════
+   TRACK DRILL MODAL — strictly context-aware view per kpiType
+   Only the metrics, charts & columns relevant to the clicked KPI are shown.
+   Drill-deeper: click a Platform / Courier / Zone chip to filter in place.
+   ═══════════════════════════════════════════════════════════════════════════ */
+function TrackDrillModal({ trackDrill, onClose, setTrackDrill, now }) {
+  const kpiType = trackDrill.kpiType || 'general';
+  const [scope, setScope] = useState({ platform: null, vendor: null, zone: null });
+  const [tab, setTab] = useState('summary'); // summary | breakdown | outliers | raw
 
-        /* Aggregations */
-        const platSum = {};
-        dd.forEach(r => { const p = r.platform || 'Unknown'; if (!platSum[p]) platSum[p] = { total: 0, delivered: 0, rto: 0, cost: 0, inv: 0 }; platSum[p].total++; if (isDelivered(r.status)||isPartialDelivered(r.status)) platSum[p].delivered++; if (isRTO(r.status)) platSum[p].rto++; platSum[p].cost += parseFloat(r.logisticsCost)||0; platSum[p].inv += parseFloat(r.invoiceValue)||0; });
-        const platArr = Object.entries(platSum).map(([p,v]) => ({platform:p,...v,delPct:v.total>0?percent(v.delivered,v.total):0,rtoPct:v.total>0?percent(v.rto,v.total):0,costPct:v.inv>0?(v.cost/v.inv*100):0,avgCost:v.total>0?v.cost/v.total:0})).sort((a,b)=> isCost ? b.cost-a.cost : b.total-a.total);
+  /* Apply in-modal scope filters */
+  const dd = useMemo(() => {
+    return trackDrill.data.filter(r =>
+      (!scope.platform || (r.platform || 'Unknown') === scope.platform) &&
+      (!scope.vendor   || (r.vendor   || 'Unknown') === scope.vendor) &&
+      (!scope.zone     || (r.zone     || 'Unknown') === scope.zone)
+    );
+  }, [trackDrill.data, scope]);
 
-        const courSum = {};
-        dd.forEach(r => { const c = r.vendor || 'Unknown'; if (!courSum[c]) courSum[c] = { total: 0, delivered: 0, rto: 0, cost: 0, inv: 0 }; courSum[c].total++; if (isDelivered(r.status)||isPartialDelivered(r.status)) courSum[c].delivered++; if (isRTO(r.status)) courSum[c].rto++; courSum[c].cost += parseFloat(r.logisticsCost)||0; courSum[c].inv += parseFloat(r.invoiceValue)||0; });
-        const courArr = Object.entries(courSum).map(([c,v]) => ({courier:c,...v,delPct:v.total>0?percent(v.delivered,v.total):0,rtoPct:v.total>0?percent(v.rto,v.total):0,costPct:v.inv>0?(v.cost/v.inv*100):0,avgCost:v.total>0?v.cost/v.total:0})).sort((a,b)=> isCost ? b.cost-a.cost : b.total-a.total);
+  const isCost     = kpiType === 'cost';
+  const isDel      = kpiType === 'delivery' || kpiType === 'platform';
+  const isRto      = kpiType === 'rto';
+  const isRtoAging = kpiType === 'rto-aging';
+  const isTransit  = kpiType === 'transit';
+  const isPod      = kpiType === 'pod';
+  const isAppt     = kpiType === 'appt';
+  const isGrn      = kpiType === 'grn';
+  const isDispatch = kpiType === 'dispatch';
+  const isManual   = kpiType === 'manual';
+  const isAgingType = isTransit || isRtoAging;
 
-        const zoneSum = {};
-        dd.forEach(r => { const z = r.zone || 'Unknown'; if (!zoneSum[z]) zoneSum[z] = { total: 0, delivered: 0, rto: 0, cost: 0, inv: 0 }; zoneSum[z].total++; if (isDelivered(r.status)||isPartialDelivered(r.status)) zoneSum[z].delivered++; if (isRTO(r.status)) zoneSum[z].rto++; zoneSum[z].cost += parseFloat(r.logisticsCost)||0; zoneSum[z].inv += parseFloat(r.invoiceValue)||0; });
-        const zoneArr = Object.entries(zoneSum).map(([z,v]) => ({zone:z,...v,delPct:v.total>0?percent(v.delivered,v.total):0,rtoPct:v.total>0?percent(v.rto,v.total):0,costPct:v.inv>0?(v.cost/v.inv*100):0,avgCost:v.total>0?v.cost/v.total:0})).sort((a,b)=> isCost ? b.cost-a.cost : b.total-a.total);
+  /* Status counts */
+  const delC = dd.filter(r => isDelivered(r.status) || isPartialDelivered(r.status)).length;
+  const rtoC = dd.filter(r => isRTO(r.status)).length;
+  const intC = dd.filter(r => isInTransit(r.status) || isOFD(r.status)).length;
+  const othC = dd.length - delC - rtoC - intC;
 
-        /* Cost-specific metrics */
-        const totalCost = dd.reduce((s, r) => s + (parseFloat(r.logisticsCost) || 0), 0);
-        const totalInv = dd.reduce((s, r) => s + (parseFloat(r.invoiceValue) || 0), 0);
-        const weightedCostPct = totalInv > 0 ? (totalCost / totalInv * 100) : 0;
-        const avgCostPerShip = dd.length > 0 ? totalCost / dd.length : 0;
-        const costOutliers = isCost ? [...dd].map(r => ({ ...r, _cost: parseFloat(r.logisticsCost)||0, _inv: parseFloat(r.invoiceValue)||0, _pct: (parseFloat(r.invoiceValue)||0) > 0 ? (parseFloat(r.logisticsCost)||0)/(parseFloat(r.invoiceValue)||1)*100 : 0 })).sort((a,b)=>b._pct-a._pct).slice(0,10) : [];
+  /* Cost-specific aggregates */
+  const costRows = dd.filter(r => parseFloat(r.invoiceValue) > 0); // valid cost-% denominators
+  const totalCost = dd.reduce((s, r) => s + (parseFloat(r.logisticsCost) || 0), 0);
+  const totalInv  = dd.reduce((s, r) => s + (parseFloat(r.invoiceValue) || 0), 0);
+  const weightedCostPct = totalInv > 0 ? (totalCost / totalInv * 100) : 0;
+  const avgCostPerShip  = dd.length > 0 ? totalCost / dd.length : 0;
+  const missingInvCount = dd.filter(r => parseFloat(r.logisticsCost) > 0 && !(parseFloat(r.invoiceValue) > 0)).length;
+  const missingInvPct   = dd.length > 0 ? (missingInvCount / dd.length * 100) : 0;
 
-        /* Transit aging buckets */
-        let transitBuckets = null;
-        if (isTransit) {
-          const buck = { '0-7':0, '8-15':0, '16-30':0, '30+':0 };
-          dd.forEach(r => { const bd = safeParseDate(r.bookingDate); if (!bd) return; const age = Math.floor((now-bd)/86400000); if (age<=7) buck['0-7']++; else if (age<=15) buck['8-15']++; else if (age<=30) buck['16-30']++; else buck['30+']++; });
-          transitBuckets = buck;
-        }
+  /* Per-shipment cost % distribution buckets (only rows with valid invoice) */
+  const costBuckets = useMemo(() => {
+    if (!isCost) return null;
+    const b = { '<3%': 0, '3-5%': 0, '5-7%': 0, '7-10%': 0, '10%+': 0 };
+    costRows.forEach(r => {
+      const c = parseFloat(r.logisticsCost) || 0;
+      const i = parseFloat(r.invoiceValue) || 0;
+      if (i <= 0) return;
+      const p = c / i * 100;
+      if (p < 3) b['<3%']++;
+      else if (p < 5) b['3-5%']++;
+      else if (p < 7) b['5-7%']++;
+      else if (p < 10) b['7-10%']++;
+      else b['10%+']++;
+    });
+    return b;
+  }, [isCost, costRows]);
 
-        /* Columns for data table — context-aware */
-        let cols = [
-          { key: 'awbNo', label: 'AWB No' }, { key: 'invoiceNo', label: 'Invoice No' }, { key: 'vendor', label: 'Courier' },
-          { key: 'platform', label: 'Platform' }, { key: 'destination', label: 'City' }, { key: 'status', label: 'Status' },
-          { key: 'bookingDate', label: 'Booking', render: v => formatDate(v) }, { key: 'deliveryDate', label: 'Delivery', render: v => formatDate(v) },
-          { key: 'zone', label: 'Zone' }, { key: 'failureRemarks', label: 'Remarks' },
-        ];
-        if (isCost) cols = [
-          { key: 'awbNo', label: 'AWB No' }, { key: 'invoiceNo', label: 'Invoice No' }, { key: 'vendor', label: 'Courier' },
-          { key: 'platform', label: 'Platform' }, { key: 'destination', label: 'City' }, { key: 'zone', label: 'Zone' },
-          { key: 'invoiceValue', label: 'Invoice Value', render: v => currency(parseFloat(v) || 0) },
-          { key: 'logisticsCost', label: 'Cost', render: v => currency(parseFloat(v) || 0) },
-          { key: '_costPct', label: 'Cost %', render: (_, r) => { const c=parseFloat(r.logisticsCost)||0; const i=parseFloat(r.invoiceValue)||0; return i>0?(c/i*100).toFixed(1)+'%':'-'; } },
-          { key: 'status', label: 'Status' },
-        ];
-        else if (isRto) cols = [
-          { key: 'awbNo', label: 'AWB No' }, { key: 'vendor', label: 'Courier' }, { key: 'platform', label: 'Platform' },
-          { key: 'destination', label: 'City' }, { key: 'zone', label: 'Zone' },
-          { key: 'bookingDate', label: 'Booking', render: v => formatDate(v) },
-          { key: 'logisticsCost', label: 'RTO Cost', render: v => currency(parseFloat(v) || 0) },
-          { key: 'failureRemarks', label: 'RTO Reason' },
-        ];
-        else if (isTransit || isAppt) cols = [
-          { key: 'awbNo', label: 'AWB No' }, { key: 'vendor', label: 'Courier' }, { key: 'platform', label: 'Platform' },
-          { key: 'destination', label: 'City' }, { key: 'zone', label: 'Zone' }, { key: 'status', label: 'Status' },
-          { key: 'bookingDate', label: 'Booking', render: v => formatDate(v) },
-          { key: '_age', label: 'Age (days)', render: (_, r) => { const bd = safeParseDate(r.bookingDate); return bd ? Math.floor((now-bd)/86400000) : '-'; } },
-          { key: 'appointmentDate', label: 'Appt', render: v => formatDate(v) },
-        ];
-        else if (isPod) cols = [
-          { key: 'awbNo', label: 'AWB No' }, { key: 'vendor', label: 'Courier' }, { key: 'platform', label: 'Platform' },
-          { key: 'destination', label: 'City' }, { key: 'deliveryDate', label: 'Delivered', render: v => formatDate(v) },
-          { key: 'pod', label: 'POD' }, { key: 'status', label: 'Status' },
-        ];
+  /* Aggregate by dimension */
+  const aggregate = (keyFn) => {
+    const m = {};
+    dd.forEach(r => {
+      const k = keyFn(r) || 'Unknown';
+      if (!m[k]) m[k] = { total: 0, delivered: 0, rto: 0, intransit: 0, cost: 0, inv: 0, missingInv: 0 };
+      m[k].total++;
+      if (isDelivered(r.status) || isPartialDelivered(r.status)) m[k].delivered++;
+      if (isRTO(r.status)) m[k].rto++;
+      if (isInTransit(r.status) || isOFD(r.status)) m[k].intransit++;
+      const c = parseFloat(r.logisticsCost) || 0;
+      const i = parseFloat(r.invoiceValue) || 0;
+      m[k].cost += c;
+      m[k].inv  += i;
+      if (c > 0 && i <= 0) m[k].missingInv++;
+    });
+    return Object.entries(m).map(([key, v]) => ({
+      key, ...v,
+      delPct:  v.total > 0 ? percent(v.delivered, v.total) : 0,
+      rtoPct:  v.total > 0 ? percent(v.rto, v.total) : 0,
+      costPct: v.inv > 0 ? (v.cost / v.inv * 100) : 0,
+      avgCost: v.total > 0 ? v.cost / v.total : 0,
+      costShare: totalCost > 0 ? (v.cost / totalCost * 100) : 0,
+    }));
+  };
 
-        return (
-        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm overflow-auto p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl mt-8 mb-8">
-            <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100">
-              <h3 className="text-sm font-bold text-gray-800">{trackDrill.title}</h3>
-              <button onClick={() => setTrackDrill(null)} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400"><X className="w-4 h-4" /></button>
-            </div>
-            <div className="p-4 space-y-4">
-              {/* Context note when records were excluded from cost calc */}
-              {isCost && trackDrill.excludedCount > 0 && (
-                <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-[10px] text-amber-700">
-                  <span className="font-semibold">Note:</span> {trackDrill.excludedCount} shipment(s) with cost but missing invoice value were excluded — they would skew the Cost % calculation.
-                </div>
-              )}
+  const platArr = useMemo(() => aggregate(r => r.platform).sort((a, b) => isCost ? b.cost - a.cost : isRto ? b.rto - a.rto : b.total - a.total), [dd, isCost, isRto]);
+  const courArr = useMemo(() => aggregate(r => r.vendor).sort((a, b) => isCost ? b.cost - a.cost : isRto ? b.rto - a.rto : b.total - a.total), [dd, isCost, isRto]);
+  const zoneArr = useMemo(() => aggregate(r => r.zone).sort((a, b) => isCost ? b.cost - a.cost : isRto ? b.rto - a.rto : b.total - a.total), [dd, isCost, isRto]);
 
-              {/* Context-aware top metric cards */}
-              {isCost && (
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-                  <div className="bg-blue-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">Shipments</p><p className="text-lg font-bold text-blue-700">{dd.length}</p></div>
-                  <div className="bg-indigo-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">Total Cost</p><p className="text-lg font-bold text-indigo-700">{currency(totalCost)}</p></div>
-                  <div className="bg-purple-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">Invoice Value</p><p className="text-lg font-bold text-purple-700">{currency(totalInv)}</p></div>
-                  <div className="bg-red-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">Weighted Cost %</p><p className="text-lg font-bold text-red-600">{weightedCostPct.toFixed(2)}%</p></div>
-                  <div className="bg-amber-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">Avg ₹/Shipment</p><p className="text-lg font-bold text-amber-700">{currency(avgCostPerShip)}</p></div>
-                </div>
-              )}
-              {isDel && (
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                  <div className="bg-blue-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">Total</p><p className="text-lg font-bold text-blue-700">{dd.length}</p></div>
-                  <div className="bg-emerald-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">Delivered</p><p className="text-lg font-bold text-emerald-700">{delC}</p></div>
-                  <div className="bg-indigo-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">Delivery %</p><p className="text-lg font-bold text-indigo-700">{dd.length>0?percent(delC,dd.length).toFixed(1):0}%</p></div>
-                  <div className="bg-red-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">RTO</p><p className="text-lg font-bold text-red-600">{rtoC}</p></div>
-                </div>
-              )}
-              {isRto && (
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                  <div className="bg-red-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">RTO Shipments</p><p className="text-lg font-bold text-red-600">{dd.length}</p></div>
-                  <div className="bg-amber-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">RTO Cost Loss</p><p className="text-lg font-bold text-amber-700">{currency(totalCost)}</p></div>
-                  <div className="bg-purple-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">Invoice at Risk</p><p className="text-lg font-bold text-purple-700">{currency(totalInv)}</p></div>
-                  <div className="bg-indigo-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">Avg ₹/RTO</p><p className="text-lg font-bold text-indigo-700">{currency(avgCostPerShip)}</p></div>
-                </div>
-              )}
-              {isTransit && transitBuckets && (
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-                  <div className="bg-blue-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">In-Transit</p><p className="text-lg font-bold text-blue-700">{dd.length}</p></div>
-                  <div className="bg-emerald-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">0-7 days</p><p className="text-lg font-bold text-emerald-700">{transitBuckets['0-7']}</p></div>
-                  <div className="bg-amber-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">8-15 days</p><p className="text-lg font-bold text-amber-700">{transitBuckets['8-15']}</p></div>
-                  <div className="bg-orange-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">16-30 days</p><p className="text-lg font-bold text-orange-700">{transitBuckets['16-30']}</p></div>
-                  <div className="bg-red-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">30+ days</p><p className="text-lg font-bold text-red-600">{transitBuckets['30+']}</p></div>
-                </div>
-              )}
-              {(isPod || isAppt || kpiType === 'general') && (
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-                  <div className="bg-blue-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">Total</p><p className="text-lg font-bold text-blue-700">{dd.length}</p></div>
-                  <div className="bg-emerald-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">Delivered</p><p className="text-lg font-bold text-emerald-700">{delC}</p></div>
-                  <div className="bg-red-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">RTO</p><p className="text-lg font-bold text-red-600">{rtoC}</p></div>
-                  <div className="bg-indigo-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">In-Transit</p><p className="text-lg font-bold text-indigo-600">{intC}</p></div>
-                  <div className="bg-amber-50 rounded-lg p-2 text-center"><p className="text-[9px] text-gray-500">Other</p><p className="text-lg font-bold text-amber-600">{othC}</p></div>
-                </div>
-              )}
+  /* Cost outliers (per-shipment cost %) */
+  const costOutliers = useMemo(() => {
+    if (!isCost) return [];
+    return costRows.map(r => {
+      const c = parseFloat(r.logisticsCost) || 0;
+      const i = parseFloat(r.invoiceValue) || 0;
+      return { ...r, _cost: c, _inv: i, _pct: i > 0 ? (c / i * 100) : 0 };
+    }).sort((a, b) => b._pct - a._pct).slice(0, 15);
+  }, [isCost, costRows]);
 
-              {/* Platform Breakdown — columns vary by context */}
-              <div className="bg-gray-50 rounded-xl p-3">
-                <p className="text-[10px] font-bold text-gray-600 uppercase mb-2">Platform Breakdown</p>
-                <div className="overflow-x-auto"><table className="w-full text-[10px]"><thead><tr className="border-b border-gray-200">
-                  <th className="px-2 py-1 text-left font-semibold text-gray-500">Platform</th>
-                  <th className="px-2 py-1 text-right font-semibold text-gray-500">Total</th>
-                  {isCost && <>
-                    <th className="px-2 py-1 text-right font-semibold text-purple-600">Invoice</th>
-                    <th className="px-2 py-1 text-right font-semibold text-blue-600">Cost</th>
-                    <th className="px-2 py-1 text-right font-semibold text-blue-600">Cost %</th>
-                    <th className="px-2 py-1 text-right font-semibold text-amber-600">Avg ₹/Ship</th>
-                  </>}
-                  {!isCost && <>
-                    <th className="px-2 py-1 text-right font-semibold text-emerald-600">Del</th>
-                    <th className="px-2 py-1 text-right font-semibold text-emerald-600">Del %</th>
-                    {!isRto && <th className="px-2 py-1 text-right font-semibold text-red-500">RTO</th>}
-                    {isRto && <th className="px-2 py-1 text-right font-semibold text-red-500">RTO %</th>}
-                  </>}
-                </tr></thead><tbody className="divide-y divide-gray-100">
-                  {platArr.slice(0,10).map(p => <tr key={p.platform}>
-                    <td className="px-2 py-1 font-medium text-gray-700">{p.platform}</td>
-                    <td className="px-2 py-1 text-right">{p.total}</td>
-                    {isCost && <>
-                      <td className="px-2 py-1 text-right text-purple-600">{currency(p.inv)}</td>
-                      <td className="px-2 py-1 text-right text-blue-600">{currency(p.cost)}</td>
-                      <td className="px-2 py-1 text-right font-semibold" style={{color:p.costPct>10?'#dc2626':p.costPct>6?'#d97706':'#059669'}}>{p.costPct.toFixed(2)}%</td>
-                      <td className="px-2 py-1 text-right text-amber-700">{currency(p.avgCost)}</td>
-                    </>}
-                    {!isCost && <>
-                      <td className="px-2 py-1 text-right text-emerald-600">{p.delivered}</td>
-                      <td className="px-2 py-1 text-right font-semibold" style={{color:p.delPct>=90?'#059669':'#dc2626'}}>{p.delPct.toFixed(1)}%</td>
-                      {!isRto && <td className="px-2 py-1 text-right text-red-500">{p.rto}</td>}
-                      {isRto && <td className="px-2 py-1 text-right font-semibold text-red-500">{p.rtoPct.toFixed(1)}%</td>}
-                    </>}
-                  </tr>)}
-                </tbody></table></div>
-              </div>
+  /* RTO reason breakdown */
+  const rtoReasons = useMemo(() => {
+    if (!(isRto || isRtoAging)) return [];
+    const m = {};
+    dd.forEach(r => {
+      const rm = (r.failureRemarks || '').trim();
+      const key = rm && rm !== 'NA' && rm !== '-' ? rm : 'No reason recorded';
+      if (!m[key]) m[key] = { count: 0, cost: 0 };
+      m[key].count++;
+      m[key].cost += parseFloat(r.logisticsCost) || 0;
+    });
+    return Object.entries(m).map(([reason, v]) => ({ reason, ...v })).sort((a, b) => b.count - a.count).slice(0, 8);
+  }, [isRto, dd]);
 
-              {/* Courier & Zone — context-aware metric shown */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div className="bg-gray-50 rounded-xl p-3">
-                  <p className="text-[10px] font-bold text-gray-600 uppercase mb-2">Courier {isCost ? '— Cost %' : isRto ? '— RTO %' : '— Delivery %'}</p>
-                  <div className="space-y-1">{courArr.slice(0,8).map(c => <div key={c.courier} className="flex items-center justify-between text-[10px] py-0.5">
-                    <span className="text-gray-700 truncate flex-1 mr-2">{c.courier}</span>
-                    {isCost ? <span className="font-semibold">{c.total} | <span className="text-blue-600">{currency(c.cost)}</span> | <span style={{color:c.costPct>10?'#dc2626':'#059669'}}>{c.costPct.toFixed(1)}%</span></span>
-                      : isRto ? <span className="font-semibold">{c.total} | <span className="text-red-500">{c.rtoPct.toFixed(0)}%</span></span>
-                      : <span className="font-semibold">{c.total} | <span className="text-emerald-600">{c.delPct.toFixed(0)}%</span></span>}
-                  </div>)}</div>
-                </div>
-                <div className="bg-gray-50 rounded-xl p-3">
-                  <p className="text-[10px] font-bold text-gray-600 uppercase mb-2">Zone {isCost ? '— Cost %' : isRto ? '— RTO %' : '— Delivery %'}</p>
-                  <div className="space-y-1">{zoneArr.slice(0,8).map(z => <div key={z.zone} className="flex items-center justify-between text-[10px] py-0.5">
-                    <span className="text-gray-700">{z.zone}</span>
-                    {isCost ? <span className="font-semibold">{z.total} | <span className="text-blue-600">{currency(z.cost)}</span> | <span style={{color:z.costPct>10?'#dc2626':'#059669'}}>{z.costPct.toFixed(1)}%</span></span>
-                      : isRto ? <span className="font-semibold">{z.total} | <span className="text-red-500">{z.rtoPct.toFixed(0)}%</span></span>
-                      : <span className="font-semibold">{z.total} | <span className="text-emerald-600">{z.delPct.toFixed(0)}%</span></span>}
-                  </div>)}</div>
-                </div>
-              </div>
+  /* Aging buckets — used by transit & rto-aging */
+  const agingBuckets = useMemo(() => {
+    if (!isAgingType) return null;
+    const b = { '0-7': 0, '8-15': 0, '16-30': 0, '30+': 0 };
+    dd.forEach(r => {
+      const bd = safeParseDate(r.bookingDate);
+      if (!bd) return;
+      const age = Math.floor((now - bd) / 86400000);
+      if (age <= 7) b['0-7']++;
+      else if (age <= 15) b['8-15']++;
+      else if (age <= 30) b['16-30']++;
+      else b['30+']++;
+    });
+    return b;
+  }, [isAgingType, dd, now]);
 
-              {/* Cost outliers — only for cost KPI */}
-              {isCost && costOutliers.length > 0 && (
-                <div className="bg-red-50 border border-red-200 rounded-xl p-3">
-                  <p className="text-[10px] font-bold text-red-700 uppercase mb-2 flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> Top 10 Cost % Outliers (highest cost relative to invoice)</p>
-                  <div className="overflow-x-auto"><table className="w-full text-[10px]"><thead><tr className="border-b border-red-200">
-                    <th className="px-2 py-1 text-left font-semibold text-gray-500">AWB</th>
-                    <th className="px-2 py-1 text-left font-semibold text-gray-500">Platform</th>
-                    <th className="px-2 py-1 text-left font-semibold text-gray-500">Courier</th>
-                    <th className="px-2 py-1 text-left font-semibold text-gray-500">City</th>
-                    <th className="px-2 py-1 text-right font-semibold text-purple-600">Invoice</th>
-                    <th className="px-2 py-1 text-right font-semibold text-blue-600">Cost</th>
-                    <th className="px-2 py-1 text-right font-semibold text-red-600">Cost %</th>
-                  </tr></thead><tbody className="divide-y divide-red-100">
-                    {costOutliers.map(r => <tr key={r.awbNo}>
-                      <td className="px-2 py-1 font-mono text-gray-700">{r.awbNo}</td>
-                      <td className="px-2 py-1">{r.platform}</td>
-                      <td className="px-2 py-1">{r.vendor}</td>
-                      <td className="px-2 py-1">{r.destination}</td>
-                      <td className="px-2 py-1 text-right text-purple-600">{currency(r._inv)}</td>
-                      <td className="px-2 py-1 text-right text-blue-600">{currency(r._cost)}</td>
-                      <td className="px-2 py-1 text-right font-bold text-red-600">{r._pct.toFixed(1)}%</td>
-                    </tr>)}
-                  </tbody></table></div>
-                </div>
-              )}
+  /* Oldest shipments — actionable list (transit / rto-aging) */
+  const oldestAging = useMemo(() => {
+    if (!isAgingType) return [];
+    return dd.map(r => ({ ...r, _age: (() => { const bd = safeParseDate(r.bookingDate); return bd ? Math.floor((now - bd) / 86400000) : -1; })() }))
+      .filter(r => r._age >= 0).sort((a, b) => b._age - a._age).slice(0, 15);
+  }, [isAgingType, dd, now]);
 
-              <DataTable data={dd} columns={cols} exportFilename={`${kpiType}-${trackDrill.month||'drill'}`} pageSize={25} />
-            </div>
+  /* Dispatch — same-day metric: dispatched on or before today */
+  const dispatchStats = useMemo(() => {
+    if (!isDispatch) return null;
+    let sameDay = 0, withBooking = 0;
+    dd.forEach(r => {
+      const bd = safeParseDate(r.bookingDate);
+      if (!bd) return;
+      withBooking++;
+      const dd2 = safeParseDate(r.deliveryDate);
+      if (dd2 && Math.abs(dd2 - bd) / 86400000 < 1) sameDay++;
+    });
+    return { withBooking, sameDay, sameDayPct: withBooking > 0 ? (sameDay / withBooking * 100) : 0 };
+  }, [isDispatch, dd]);
+
+  /* Columns for raw-data table — context-appropriate only */
+  const cols = useMemo(() => {
+    if (isCost) return [
+      { key: 'awbNo', label: 'AWB No' },
+      { key: 'invoiceNo', label: 'Invoice No' },
+      { key: 'vendor', label: 'Courier' },
+      { key: 'platform', label: 'Platform' },
+      { key: 'destination', label: 'City' },
+      { key: 'zone', label: 'Zone' },
+      { key: 'invoiceValue', label: 'Invoice Value', render: v => parseFloat(v) > 0 ? currency(parseFloat(v)) : <span className="text-red-500 text-[9px]">missing</span> },
+      { key: 'logisticsCost', label: 'Cost', render: v => currency(parseFloat(v) || 0) },
+      { key: '_costPct', label: 'Cost %', render: (_, r) => { const c = parseFloat(r.logisticsCost) || 0; const i = parseFloat(r.invoiceValue) || 0; return i > 0 ? <span style={{ color: c/i*100 > 10 ? '#dc2626' : c/i*100 > 6 ? '#d97706' : '#059669', fontWeight: 600 }}>{(c/i*100).toFixed(1)}%</span> : '-'; } },
+      { key: 'status', label: 'Status' },
+    ];
+    if (isRto) return [
+      { key: 'awbNo', label: 'AWB No' },
+      { key: 'vendor', label: 'Courier' },
+      { key: 'platform', label: 'Platform' },
+      { key: 'destination', label: 'City' },
+      { key: 'zone', label: 'Zone' },
+      { key: 'bookingDate', label: 'Booking', render: v => formatDate(v) },
+      { key: 'logisticsCost', label: 'RTO Cost', render: v => currency(parseFloat(v) || 0) },
+      { key: 'failureRemarks', label: 'RTO Reason' },
+    ];
+    if (isTransit || isAppt || isRtoAging) return [
+      { key: 'awbNo', label: 'AWB No' },
+      { key: 'vendor', label: 'Courier' },
+      { key: 'platform', label: 'Platform' },
+      { key: 'destination', label: 'City' },
+      { key: 'zone', label: 'Zone' },
+      { key: 'status', label: 'Status' },
+      { key: 'bookingDate', label: 'Booking', render: v => formatDate(v) },
+      { key: '_age', label: 'Age (d)', render: (_, r) => { const bd = safeParseDate(r.bookingDate); return bd ? Math.floor((now - bd) / 86400000) : '-'; } },
+      { key: 'appointmentDate', label: 'Appt', render: v => formatDate(v) },
+    ];
+    if (isPod) return [
+      { key: 'awbNo', label: 'AWB No' },
+      { key: 'vendor', label: 'Courier' },
+      { key: 'platform', label: 'Platform' },
+      { key: 'destination', label: 'City' },
+      { key: 'deliveryDate', label: 'Delivered', render: v => formatDate(v) },
+      { key: 'pod', label: 'POD' },
+      { key: 'status', label: 'Status' },
+    ];
+    /* delivery / general */
+    return [
+      { key: 'awbNo', label: 'AWB No' },
+      { key: 'invoiceNo', label: 'Invoice No' },
+      { key: 'vendor', label: 'Courier' },
+      { key: 'platform', label: 'Platform' },
+      { key: 'destination', label: 'City' },
+      { key: 'status', label: 'Status' },
+      { key: 'bookingDate', label: 'Booking', render: v => formatDate(v) },
+      { key: 'deliveryDate', label: 'Delivery', render: v => formatDate(v) },
+      { key: 'zone', label: 'Zone' },
+      { key: 'failureRemarks', label: 'Remarks' },
+    ];
+  }, [isCost, isRto, isTransit, isRtoAging, isAppt, isPod, now]);
+
+  /* Color thresholds */
+  const costColor = (p) => p > 10 ? '#dc2626' : p > 6 ? '#d97706' : '#059669';
+  const delColor  = (p) => p >= 90 ? '#059669' : p >= 75 ? '#d97706' : '#dc2626';
+
+  const accent = isCost ? 'indigo' : (isRto || isRtoAging) ? 'red' : isTransit ? 'amber' : isPod ? 'purple' : isAppt ? 'blue' : isGrn ? 'orange' : isDispatch ? 'cyan' : isManual ? 'slate' : 'emerald';
+  const accentTextCls = { indigo: 'text-indigo-700', red: 'text-red-700', amber: 'text-amber-700', purple: 'text-purple-700', blue: 'text-blue-700', emerald: 'text-emerald-700', orange: 'text-orange-700', cyan: 'text-cyan-700', slate: 'text-slate-700' }[accent];
+  const tabActiveCls = { indigo: 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-500', red: 'bg-red-50 text-red-700 border-b-2 border-red-500', amber: 'bg-amber-50 text-amber-700 border-b-2 border-amber-500', purple: 'bg-purple-50 text-purple-700 border-b-2 border-purple-500', blue: 'bg-blue-50 text-blue-700 border-b-2 border-blue-500', emerald: 'bg-emerald-50 text-emerald-700 border-b-2 border-emerald-500', orange: 'bg-orange-50 text-orange-700 border-b-2 border-orange-500', cyan: 'bg-cyan-50 text-cyan-700 border-b-2 border-cyan-500', slate: 'bg-slate-50 text-slate-700 border-b-2 border-slate-500' }[accent];
+
+  const hasScope = scope.platform || scope.vendor || scope.zone;
+  const clearScope = () => setScope({ platform: null, vendor: null, zone: null });
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm overflow-auto p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl mt-8 mb-8" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100">
+          <div className="flex items-center gap-3">
+            <h3 className={`text-sm font-bold ${accentTextCls}`}>{trackDrill.title}</h3>
+            <span className="text-[10px] text-gray-400">·</span>
+            <span className="text-[10px] uppercase tracking-wider text-gray-400 font-semibold">{kpiType} view</span>
           </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400"><X className="w-4 h-4" /></button>
         </div>
-        );
-      })()}
+
+        {/* Tab strip */}
+        <div className="flex items-center gap-1 px-5 pt-3 border-b border-gray-100">
+          {[
+            { k: 'summary', l: 'Summary' },
+            { k: 'breakdown', l: 'Breakdown' },
+            ...(isCost ? [{ k: 'outliers', l: 'Cost Outliers' }] : []),
+            ...((isRto || isRtoAging) ? [{ k: 'reasons', l: 'RTO Reasons' }] : []),
+            ...(isAgingType ? [{ k: 'aging', l: isRtoAging ? 'Oldest RTOs' : 'Aging List' }] : []),
+            { k: 'raw', l: `Raw Data (${dd.length})` },
+          ].map(t => (
+            <button key={t.k} onClick={() => setTab(t.k)}
+              className={`px-3 py-1.5 text-[10px] font-semibold rounded-t-md transition-colors ${tab === t.k ? tabActiveCls : 'text-gray-500 hover:text-gray-700'}`}>
+              {t.l}
+            </button>
+          ))}
+        </div>
+
+        {/* In-modal scope chips */}
+        {hasScope && (
+          <div className="px-5 py-2 bg-gray-50/60 border-b border-gray-100 flex items-center gap-2 flex-wrap">
+            <span className="text-[9px] uppercase tracking-wider text-gray-500 font-semibold">Filtered:</span>
+            {scope.platform && <button onClick={() => setScope(s => ({ ...s, platform: null }))} className="px-2 py-0.5 bg-white border border-gray-200 rounded-full text-[10px] hover:border-red-300 hover:text-red-600 flex items-center gap-1">Platform: <strong>{scope.platform}</strong> <X className="w-2.5 h-2.5" /></button>}
+            {scope.vendor && <button onClick={() => setScope(s => ({ ...s, vendor: null }))} className="px-2 py-0.5 bg-white border border-gray-200 rounded-full text-[10px] hover:border-red-300 hover:text-red-600 flex items-center gap-1">Courier: <strong>{scope.vendor}</strong> <X className="w-2.5 h-2.5" /></button>}
+            {scope.zone && <button onClick={() => setScope(s => ({ ...s, zone: null }))} className="px-2 py-0.5 bg-white border border-gray-200 rounded-full text-[10px] hover:border-red-300 hover:text-red-600 flex items-center gap-1">Zone: <strong>{scope.zone}</strong> <X className="w-2.5 h-2.5" /></button>}
+            <button onClick={clearScope} className="text-[10px] text-gray-500 hover:text-red-600 ml-1">Clear all</button>
+            <span className="text-[10px] text-gray-400 ml-auto">{dd.length} of {trackDrill.data.length} records</span>
+          </div>
+        )}
+
+        <div className="p-4 space-y-4">
+          {/* Contextual note from classifier */}
+          {trackDrill.note && (
+            <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 text-[10px] text-blue-800 flex items-start gap-2">
+              <Lightbulb className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+              <span>{trackDrill.note}</span>
+            </div>
+          )}
+
+          {/* ─── SUMMARY TAB ─── */}
+          {tab === 'summary' && (<>
+            {/* COST view */}
+            {isCost && (<>
+              {/* Hero formula + warning */}
+              <div className="bg-gradient-to-br from-indigo-50 to-blue-50 border border-indigo-100 rounded-xl p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-[10px] uppercase tracking-wider text-indigo-600 font-semibold">Weighted Cost %</p>
+                  <span className="text-[9px] text-gray-500 font-mono">Σ Cost ÷ Σ Invoice × 100</span>
+                </div>
+                <div className="flex items-baseline gap-3">
+                  <p className="text-4xl font-bold" style={{ color: costColor(weightedCostPct) }}>{weightedCostPct.toFixed(2)}%</p>
+                  <p className="text-[11px] text-gray-600 font-mono">{currency(totalCost)} ÷ {currency(totalInv)}</p>
+                </div>
+              </div>
+
+              {/* Missing-invoice prominent warning */}
+              {(trackDrill.excludedCount > 0 || missingInvCount > 0) && (
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                  <div className="text-[10px] text-amber-800">
+                    <p className="font-semibold mb-0.5">Invoice value missing for {missingInvCount + (trackDrill.excludedCount || 0)} shipment(s) ({((missingInvCount + (trackDrill.excludedCount || 0)) / (dd.length + (trackDrill.excludedCount || 0)) * 100).toFixed(1)}%)</p>
+                    <p className="text-amber-700">These are excluded from Cost % calculation since dividing by ₹0 invoice would skew the result. Get invoice values uploaded to make Cost % accurate.</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Cost-only KPI cards */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                <Stat label="Shipments (valid)" value={costRows.length.toLocaleString('en-IN')} sub={`of ${dd.length}`} color="indigo" />
+                <Stat label="Total Cost" value={currency(totalCost)} color="blue" />
+                <Stat label="Total Invoice" value={currency(totalInv)} color="purple" />
+                <Stat label="Avg ₹/Shipment" value={currency(avgCostPerShip)} color="amber" />
+              </div>
+
+              {/* Cost % distribution histogram */}
+              {costBuckets && (
+                <div className="bg-white border border-gray-100 rounded-xl p-3">
+                  <p className="text-[10px] font-bold text-gray-600 uppercase mb-2">Cost % Distribution (per shipment)</p>
+                  <div className="space-y-1">
+                    {Object.entries(costBuckets).map(([bk, ct]) => {
+                      const max = Math.max(...Object.values(costBuckets), 1);
+                      const w = ct / max * 100;
+                      const color = bk === '<3%' ? '#059669' : bk === '3-5%' ? '#10b981' : bk === '5-7%' ? '#d97706' : bk === '7-10%' ? '#ea580c' : '#dc2626';
+                      return (
+                        <div key={bk} className="flex items-center gap-2 text-[10px]">
+                          <span className="w-12 text-gray-600 font-mono">{bk}</span>
+                          <div className="flex-1 h-4 bg-gray-50 rounded overflow-hidden"><div className="h-full rounded transition-all" style={{ width: `${w}%`, background: color }} /></div>
+                          <span className="w-12 text-right font-semibold" style={{ color }}>{ct.toLocaleString('en-IN')}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </>)}
+
+            {/* RTO view */}
+            {isRto && (<>
+              <div className="bg-gradient-to-br from-red-50 to-orange-50 border border-red-100 rounded-xl p-4">
+                <p className="text-[10px] uppercase tracking-wider text-red-600 font-semibold mb-2">RTO Impact</p>
+                <div className="grid grid-cols-3 gap-3">
+                  <div><p className="text-[9px] text-gray-500">Shipments</p><p className="text-2xl font-bold text-red-700">{dd.length}</p></div>
+                  <div><p className="text-[9px] text-gray-500">Cost Loss</p><p className="text-2xl font-bold text-amber-700">{currency(totalCost)}</p></div>
+                  <div><p className="text-[9px] text-gray-500">Invoice at Risk</p><p className="text-2xl font-bold text-purple-700">{currency(totalInv)}</p></div>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                <Stat label="Avg RTO Cost" value={currency(avgCostPerShip)} color="amber" />
+                <Stat label="Top Reason Share" value={rtoReasons[0] ? `${(rtoReasons[0].count / dd.length * 100).toFixed(0)}%` : '-'} sub={rtoReasons[0]?.reason.slice(0, 18) || ''} color="red" />
+                <Stat label="Worst Courier" value={courArr[0]?.key || '-'} sub={`${courArr[0]?.rto || 0} RTOs`} color="orange" />
+                <Stat label="Worst Zone" value={zoneArr[0]?.key || '-'} sub={`${zoneArr[0]?.rto || 0} RTOs`} color="red" />
+              </div>
+            </>)}
+
+            {/* Delivery / Platform OTIF view */}
+            {isDel && (<>
+              <div className="bg-gradient-to-br from-emerald-50 to-teal-50 border border-emerald-100 rounded-xl p-4">
+                <p className="text-[10px] uppercase tracking-wider text-emerald-600 font-semibold mb-2">Delivery Performance</p>
+                <div className="flex items-baseline gap-3">
+                  <p className="text-4xl font-bold" style={{ color: delColor(dd.length > 0 ? percent(delC, dd.length) : 0) }}>{dd.length > 0 ? percent(delC, dd.length).toFixed(1) : 0}%</p>
+                  <p className="text-[11px] text-gray-600">{delC.toLocaleString('en-IN')} delivered of {dd.length.toLocaleString('en-IN')}</p>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                <Stat label="Delivered" value={delC.toLocaleString('en-IN')} color="emerald" />
+                <Stat label="RTO" value={rtoC.toLocaleString('en-IN')} sub={`${dd.length > 0 ? percent(rtoC, dd.length).toFixed(1) : 0}%`} color="red" />
+                <Stat label="In-Transit" value={intC.toLocaleString('en-IN')} color="indigo" />
+                <Stat label="Failed / Other" value={othC.toLocaleString('en-IN')} color="amber" />
+              </div>
+            </>)}
+
+            {/* Transit view */}
+            {isAgingType && agingBuckets && (<>
+              <div className={`bg-gradient-to-br ${isRtoAging ? 'from-red-50 to-orange-50 border-red-100' : 'from-amber-50 to-orange-50 border-amber-100'} border rounded-xl p-4`}>
+                <p className={`text-[10px] uppercase tracking-wider ${isRtoAging ? 'text-red-600' : 'text-amber-600'} font-semibold mb-2`}>{isRtoAging ? 'RTO Aging' : 'In-Transit Aging'}</p>
+                <p className="text-[10px] text-gray-600 mb-3">Total <strong>{dd.length.toLocaleString('en-IN')}</strong> {isRtoAging ? 'RTO' : 'in-transit'} shipments · target is <strong>≥85%</strong> within 0-7 days.</p>
+                <div className="space-y-1.5">
+                  {Object.entries(agingBuckets).map(([bk, ct]) => {
+                    const max = Math.max(...Object.values(agingBuckets), 1);
+                    const w = ct / max * 100;
+                    const pct = dd.length > 0 ? (ct / dd.length * 100) : 0;
+                    const color = bk === '0-7' ? '#10b981' : bk === '8-15' ? '#d97706' : bk === '16-30' ? '#ea580c' : '#dc2626';
+                    return (
+                      <div key={bk} className="flex items-center gap-2 text-[10px]">
+                        <span className="w-16 text-gray-700 font-medium">{bk} days</span>
+                        <div className="flex-1 h-5 bg-white rounded overflow-hidden"><div className="h-full rounded transition-all" style={{ width: `${w}%`, background: color }} /></div>
+                        <span className="w-20 text-right font-bold" style={{ color }}>{ct.toLocaleString('en-IN')} ({pct.toFixed(1)}%)</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                <Stat label="0-7 d %" value={`${dd.length > 0 ? (agingBuckets['0-7'] / dd.length * 100).toFixed(1) : 0}%`} color="emerald" />
+                <Stat label="8-15 d %" value={`${dd.length > 0 ? (agingBuckets['8-15'] / dd.length * 100).toFixed(1) : 0}%`} color="amber" />
+                <Stat label="16-30 d %" value={`${dd.length > 0 ? (agingBuckets['16-30'] / dd.length * 100).toFixed(1) : 0}%`} color="orange" />
+                <Stat label="30+ d %" value={`${dd.length > 0 ? (agingBuckets['30+'] / dd.length * 100).toFixed(1) : 0}%`} color="red" />
+              </div>
+            </>)}
+
+            {isGrn && (
+              <div className="bg-gradient-to-br from-orange-50 to-amber-50 border border-orange-100 rounded-xl p-4">
+                <p className="text-[10px] uppercase tracking-wider text-orange-600 font-semibold mb-1">GRN KPI</p>
+                <p className="text-[11px] text-gray-700">GRN (Goods Receipt Note) recovery & ageing are tracked outside the shipment dataset. Use the value in the tracker; the Raw Data tab lists the month's shipments only for cross-reference.</p>
+              </div>
+            )}
+
+            {isDispatch && dispatchStats && (<>
+              <div className="bg-gradient-to-br from-cyan-50 to-blue-50 border border-cyan-100 rounded-xl p-4">
+                <p className="text-[10px] uppercase tracking-wider text-cyan-700 font-semibold mb-2">Dispatch & Pickup</p>
+                <div className="grid grid-cols-3 gap-3">
+                  <div><p className="text-[9px] text-gray-500">Dispatched (with booking)</p><p className="text-2xl font-bold text-cyan-700">{dispatchStats.withBooking.toLocaleString('en-IN')}</p></div>
+                  <div><p className="text-[9px] text-gray-500">Same-day dispatch</p><p className="text-2xl font-bold text-emerald-700">{dispatchStats.sameDay.toLocaleString('en-IN')}</p></div>
+                  <div><p className="text-[9px] text-gray-500">Same-day %</p><p className="text-2xl font-bold text-indigo-700">{dispatchStats.sameDayPct.toFixed(1)}%</p></div>
+                </div>
+              </div>
+            </>)}
+
+            {isManual && (
+              <div className="bg-gradient-to-br from-slate-50 to-gray-50 border border-slate-200 rounded-xl p-4">
+                <p className="text-[10px] uppercase tracking-wider text-slate-600 font-semibold mb-1">Manually Tracked KPI</p>
+                <p className="text-[11px] text-gray-700">This KPI (Quality / WH Capacity / Doc Issues) is recorded manually and does not derive from shipment data. The list below shows the month's shipments only as a reference roll-up.</p>
+              </div>
+            )}
+
+            {/* POD view */}
+            {isPod && (<>
+              <div className="bg-gradient-to-br from-purple-50 to-fuchsia-50 border border-purple-100 rounded-xl p-4">
+                <p className="text-[10px] uppercase tracking-wider text-purple-600 font-semibold mb-2">POD Pending</p>
+                <p className="text-4xl font-bold text-purple-700">{dd.length.toLocaleString('en-IN')}</p>
+                <p className="text-[11px] text-gray-600 mt-1">Delivered shipments without POD upload</p>
+              </div>
+            </>)}
+
+            {/* Appointment view */}
+            {isAppt && (<>
+              <div className="bg-gradient-to-br from-blue-50 to-cyan-50 border border-blue-100 rounded-xl p-4">
+                <p className="text-[10px] uppercase tracking-wider text-blue-600 font-semibold mb-2">Non-Appointment Shipments</p>
+                <p className="text-4xl font-bold text-blue-700">{dd.length.toLocaleString('en-IN')}</p>
+                <p className="text-[11px] text-gray-600 mt-1">In-transit shipments missing appointment date</p>
+              </div>
+            </>)}
+
+            {/* Generic */}
+            {kpiType === 'general' && (
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                <Stat label="Total" value={dd.length.toLocaleString('en-IN')} color="blue" />
+                <Stat label="Delivered" value={delC.toLocaleString('en-IN')} color="emerald" />
+                <Stat label="RTO" value={rtoC.toLocaleString('en-IN')} color="red" />
+                <Stat label="In-Transit" value={intC.toLocaleString('en-IN')} color="indigo" />
+                <Stat label="Other" value={othC.toLocaleString('en-IN')} color="amber" />
+              </div>
+            )}
+
+            <div className="text-[10px] text-gray-400 italic">Tip: switch to <strong>Breakdown</strong> for per-platform / courier / zone analysis, or click any row there to drill deeper.</div>
+          </>)}
+
+          {/* ─── BREAKDOWN TAB ─── */}
+          {tab === 'breakdown' && (
+            <DimensionGrid
+              isCost={isCost} isRto={isRto || isRtoAging} isDel={isDel || isTransit || isPod || isAppt || isGrn || isDispatch || isManual || kpiType === 'general'}
+              platArr={platArr} courArr={courArr} zoneArr={zoneArr}
+              costColor={costColor} delColor={delColor}
+              onPickPlatform={(p) => setScope(s => ({ ...s, platform: p }))}
+              onPickCourier={(c) => setScope(s => ({ ...s, vendor: c }))}
+              onPickZone={(z) => setScope(s => ({ ...s, zone: z }))}
+            />
+          )}
+
+          {/* ─── COST OUTLIERS TAB ─── */}
+          {tab === 'outliers' && isCost && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3">
+              <p className="text-[10px] font-bold text-red-700 uppercase mb-2 flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> Top {costOutliers.length} Shipments — highest cost relative to invoice</p>
+              <div className="overflow-x-auto"><table className="w-full text-[10px]"><thead><tr className="border-b border-red-200">
+                <th className="px-2 py-1 text-left font-semibold text-gray-500">AWB</th>
+                <th className="px-2 py-1 text-left font-semibold text-gray-500">Invoice No</th>
+                <th className="px-2 py-1 text-left font-semibold text-gray-500">Platform</th>
+                <th className="px-2 py-1 text-left font-semibold text-gray-500">Courier</th>
+                <th className="px-2 py-1 text-left font-semibold text-gray-500">City</th>
+                <th className="px-2 py-1 text-right font-semibold text-purple-600">Invoice</th>
+                <th className="px-2 py-1 text-right font-semibold text-blue-600">Cost</th>
+                <th className="px-2 py-1 text-right font-semibold text-red-600">Cost %</th>
+              </tr></thead><tbody className="divide-y divide-red-100">
+                {costOutliers.map((r, i) => <tr key={r.awbNo || i}>
+                  <td className="px-2 py-1 font-mono text-gray-700">{r.awbNo}</td>
+                  <td className="px-2 py-1 font-mono text-gray-500">{r.invoiceNo || '-'}</td>
+                  <td className="px-2 py-1">{r.platform}</td>
+                  <td className="px-2 py-1">{r.vendor}</td>
+                  <td className="px-2 py-1">{r.destination}</td>
+                  <td className="px-2 py-1 text-right text-purple-600">{currency(r._inv)}</td>
+                  <td className="px-2 py-1 text-right text-blue-600">{currency(r._cost)}</td>
+                  <td className="px-2 py-1 text-right font-bold text-red-600">{r._pct.toFixed(1)}%</td>
+                </tr>)}
+              </tbody></table></div>
+            </div>
+          )}
+
+          {/* ─── RTO REASONS TAB ─── */}
+          {tab === 'reasons' && (isRto || isRtoAging) && (
+            <div className="bg-white border border-red-100 rounded-xl p-3">
+              <p className="text-[10px] font-bold text-red-700 uppercase mb-3">Top RTO Reasons</p>
+              <div className="space-y-2">
+                {rtoReasons.map((r, i) => {
+                  const max = Math.max(...rtoReasons.map(x => x.count), 1);
+                  const w = r.count / max * 100;
+                  return (
+                    <div key={i} className="flex items-center gap-3 text-[10px]">
+                      <span className="flex-1 text-gray-700 truncate" title={r.reason}>{r.reason}</span>
+                      <div className="w-40 h-4 bg-red-50 rounded overflow-hidden"><div className="h-full bg-red-400 rounded" style={{ width: `${w}%` }} /></div>
+                      <span className="w-12 text-right font-bold text-red-600">{r.count}</span>
+                      <span className="w-20 text-right text-amber-600">{currency(r.cost)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* ─── AGING LIST TAB ─── */}
+          {tab === 'aging' && isAgingType && (
+            <div className={`bg-white border ${isRtoAging ? 'border-red-100' : 'border-amber-100'} rounded-xl p-3`}>
+              <p className={`text-[10px] font-bold ${isRtoAging ? 'text-red-700' : 'text-amber-700'} uppercase mb-2 flex items-center gap-1`}><Clock className="w-3 h-3" /> Oldest {oldestAging.length} {isRtoAging ? 'RTO' : 'In-Transit'} Shipments</p>
+              <div className="overflow-x-auto"><table className="w-full text-[10px]"><thead><tr className={`border-b ${isRtoAging ? 'border-red-200' : 'border-amber-200'}`}>
+                <th className="px-2 py-1 text-left font-semibold text-gray-500">AWB</th>
+                <th className="px-2 py-1 text-left font-semibold text-gray-500">Courier</th>
+                <th className="px-2 py-1 text-left font-semibold text-gray-500">Platform</th>
+                <th className="px-2 py-1 text-left font-semibold text-gray-500">City</th>
+                <th className="px-2 py-1 text-left font-semibold text-gray-500">Status</th>
+                <th className="px-2 py-1 text-left font-semibold text-gray-500">Booking</th>
+                <th className="px-2 py-1 text-right font-semibold text-red-600">Age (d)</th>
+              </tr></thead><tbody className={`divide-y ${isRtoAging ? 'divide-red-100' : 'divide-amber-100'}`}>
+                {oldestAging.map((r, i) => <tr key={r.awbNo || i}>
+                  <td className="px-2 py-1 font-mono">{r.awbNo}</td>
+                  <td className="px-2 py-1">{r.vendor}</td>
+                  <td className="px-2 py-1">{r.platform}</td>
+                  <td className="px-2 py-1">{r.destination}</td>
+                  <td className="px-2 py-1 text-[9px]">{r.status}</td>
+                  <td className="px-2 py-1">{formatDate(r.bookingDate)}</td>
+                  <td className="px-2 py-1 text-right font-bold" style={{ color: r._age > 30 ? '#dc2626' : r._age > 15 ? '#ea580c' : '#d97706' }}>{r._age}</td>
+                </tr>)}
+              </tbody></table></div>
+            </div>
+          )}
+
+          {/* ─── RAW DATA TAB ─── */}
+          {tab === 'raw' && (
+            <DataTable data={dd} columns={cols} exportFilename={`${kpiType}-${trackDrill.month || 'drill'}${hasScope ? '-scoped' : ''}`} pageSize={25} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* Small stat card */
+function Stat({ label, value, sub, color = 'blue' }) {
+  const map = {
+    blue: 'bg-blue-50 text-blue-700',
+    indigo: 'bg-indigo-50 text-indigo-700',
+    purple: 'bg-purple-50 text-purple-700',
+    emerald: 'bg-emerald-50 text-emerald-700',
+    red: 'bg-red-50 text-red-700',
+    amber: 'bg-amber-50 text-amber-700',
+    orange: 'bg-orange-50 text-orange-700',
+  };
+  return (
+    <div className={`${map[color]} rounded-lg p-2 text-center`}>
+      <p className="text-[9px] text-gray-500 uppercase tracking-wider">{label}</p>
+      <p className="text-lg font-bold leading-tight">{value}</p>
+      {sub && <p className="text-[9px] text-gray-500 mt-0.5">{sub}</p>}
+    </div>
+  );
+}
+
+/* Breakdown dimension grid — Platform / Courier / Zone with click-to-drill */
+function DimensionGrid({ isCost, isRto, isDel, platArr, courArr, zoneArr, costColor, delColor, onPickPlatform, onPickCourier, onPickZone }) {
+  const renderRow = (item, onClick) => {
+    if (isCost) return (
+      <div className="grid grid-cols-12 gap-1 items-center text-[10px] py-1 hover:bg-indigo-50/40 rounded px-1 cursor-pointer" onClick={onClick}>
+        <span className="col-span-3 font-medium text-gray-700 truncate" title={item.key}>{item.key}</span>
+        <span className="col-span-1 text-right text-gray-500">{item.total}</span>
+        <span className="col-span-2 text-right text-purple-600">{currency(item.inv)}</span>
+        <span className="col-span-2 text-right text-blue-600">{currency(item.cost)}</span>
+        <span className="col-span-2 text-right font-bold" style={{ color: costColor(item.costPct) }}>{item.costPct.toFixed(2)}%</span>
+        <span className="col-span-2"><div className="h-1.5 bg-gray-100 rounded overflow-hidden"><div className="h-full bg-indigo-400" style={{ width: `${Math.min(item.costShare, 100)}%` }} /></div><p className="text-[9px] text-gray-400 text-right">{item.costShare.toFixed(0)}% share</p></span>
+      </div>
+    );
+    if (isRto) return (
+      <div className="grid grid-cols-12 gap-1 items-center text-[10px] py-1 hover:bg-red-50/40 rounded px-1 cursor-pointer" onClick={onClick}>
+        <span className="col-span-5 font-medium text-gray-700 truncate" title={item.key}>{item.key}</span>
+        <span className="col-span-2 text-right text-gray-500">{item.total}</span>
+        <span className="col-span-2 text-right text-red-600 font-semibold">{item.rto}</span>
+        <span className="col-span-3 text-right font-bold" style={{ color: item.rtoPct > 10 ? '#dc2626' : '#d97706' }}>{item.rtoPct.toFixed(1)}%</span>
+      </div>
+    );
+    return (
+      <div className="grid grid-cols-12 gap-1 items-center text-[10px] py-1 hover:bg-emerald-50/40 rounded px-1 cursor-pointer" onClick={onClick}>
+        <span className="col-span-5 font-medium text-gray-700 truncate" title={item.key}>{item.key}</span>
+        <span className="col-span-2 text-right text-gray-500">{item.total}</span>
+        <span className="col-span-2 text-right text-emerald-600 font-semibold">{item.delivered}</span>
+        <span className="col-span-3 text-right font-bold" style={{ color: delColor(item.delPct) }}>{item.delPct.toFixed(1)}%</span>
+      </div>
+    );
+  };
+
+  const header = isCost
+    ? <div className="grid grid-cols-12 gap-1 text-[9px] uppercase tracking-wider text-gray-400 font-semibold px-1 pb-1 border-b border-gray-100">
+        <span className="col-span-3">Name</span><span className="col-span-1 text-right">N</span><span className="col-span-2 text-right">Invoice</span><span className="col-span-2 text-right">Cost</span><span className="col-span-2 text-right">Cost %</span><span className="col-span-2 text-right">Share</span>
+      </div>
+    : isRto
+    ? <div className="grid grid-cols-12 gap-1 text-[9px] uppercase tracking-wider text-gray-400 font-semibold px-1 pb-1 border-b border-gray-100">
+        <span className="col-span-5">Name</span><span className="col-span-2 text-right">N</span><span className="col-span-2 text-right">RTO</span><span className="col-span-3 text-right">RTO %</span>
+      </div>
+    : <div className="grid grid-cols-12 gap-1 text-[9px] uppercase tracking-wider text-gray-400 font-semibold px-1 pb-1 border-b border-gray-100">
+        <span className="col-span-5">Name</span><span className="col-span-2 text-right">N</span><span className="col-span-2 text-right">Del</span><span className="col-span-3 text-right">Del %</span>
+      </div>;
+
+  return (
+    <div className="space-y-3">
+      <div className="bg-gray-50 rounded-xl p-3">
+        <p className="text-[10px] font-bold text-gray-600 uppercase mb-2 flex items-center gap-1"><Building2 className="w-3 h-3" /> Platform Breakdown <span className="text-gray-400 normal-case font-normal">(click to filter modal)</span></p>
+        {header}
+        <div className="divide-y divide-gray-100">{platArr.slice(0, 12).map(p => <div key={p.key}>{renderRow(p, () => onPickPlatform(p.key))}</div>)}</div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="bg-gray-50 rounded-xl p-3">
+          <p className="text-[10px] font-bold text-gray-600 uppercase mb-2 flex items-center gap-1"><Truck className="w-3 h-3" /> Courier</p>
+          {header}
+          <div className="divide-y divide-gray-100">{courArr.slice(0, 10).map(c => <div key={c.key}>{renderRow(c, () => onPickCourier(c.key))}</div>)}</div>
+        </div>
+        <div className="bg-gray-50 rounded-xl p-3">
+          <p className="text-[10px] font-bold text-gray-600 uppercase mb-2 flex items-center gap-1"><MapPin className="w-3 h-3" /> Zone</p>
+          {header}
+          <div className="divide-y divide-gray-100">{zoneArr.slice(0, 10).map(z => <div key={z.key}>{renderRow(z, () => onPickZone(z.key))}</div>)}</div>
+        </div>
+      </div>
     </div>
   );
 }

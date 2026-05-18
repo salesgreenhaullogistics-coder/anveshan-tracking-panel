@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Truck, PackageCheck, Calendar, Clock, AlertTriangle,
   Timer, CheckCircle, RotateCcw, FileText, ClipboardList, BarChart3,
   Target, IndianRupee, Users, FileCheck, Calculator, ChevronLeft,
-  ChevronRight, RefreshCw, Package,
+  ChevronRight, RefreshCw, Package, Activity, List,
 } from 'lucide-react';
 
 const NAV_GROUPS = [
@@ -11,19 +11,13 @@ const NAV_GROUPS = [
     label: 'Operations',
     items: [
       { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-      { key: 'intransit', label: 'In-Transit', icon: Truck },
-      { key: 'ofd', label: 'OFD', icon: PackageCheck },
-      { key: 'appointment', label: 'Appointment', icon: Calendar },
-      { key: 'aged-pos', label: "Aged PO's", icon: Clock },
-      { key: 'lost', label: 'Lost Shipments', icon: AlertTriangle },
-      { key: 'prepull', label: 'Prepull Aged', icon: Timer },
     ],
   },
   {
-    label: 'Delivery',
+    label: 'LRs',
     items: [
-      { key: 'delivered', label: 'Delivered', icon: CheckCircle },
-      { key: 'return', label: 'Return', icon: RotateCcw },
+      { key: 'all-lrs', label: 'All LRs', icon: List },
+      { key: 'aging-monitor', label: 'Aging Monitor', icon: Clock },
     ],
   },
   {
@@ -39,6 +33,7 @@ const NAV_GROUPS = [
       { key: 'kpi', label: 'KPI Matrix', icon: BarChart3 },
       { key: 'okr', label: 'OKR', icon: Target },
       { key: 'cost', label: 'Logistics Cost', icon: IndianRupee },
+      { key: 'analytics', label: 'Analytics', icon: Activity },
     ],
   },
   {

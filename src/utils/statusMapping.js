@@ -15,6 +15,8 @@ const STATUS_MAP = {
   'RTO - Pending with Gracious': 'RTO - In Transit',
   'RTO - OFD': 'RTO - In Transit',
   'RTO - Document Pending': 'RTO - In Transit',
+  'RTO - Connection Pending': 'RTO - In Transit',
+  'RTO - connection pending': 'RTO - In Transit',
   'f6001029324': 'Other',
   'POD Pending': 'Delivered',
   'OFD': 'In-Transit',
