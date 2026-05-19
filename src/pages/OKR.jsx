@@ -508,11 +508,18 @@ export default function OKR() {
       if (gap > 0) {
         let reason = '', action = '', impact = '';
         if (k.name.includes('Cost')) { reason = 'High RTO rate + courier pricing'; action = 'Negotiate courier contracts, reduce RTO'; impact = `Reducing cost by ${fmt(gap)}pp saves ~${currency(actuals.total * gap / 100 * 50)}`; }
-        else if (k.name.includes('transit')) { reason = 'Courier delay + appointment pending'; action = 'Escalate aged shipments, auto-reschedule appointments'; impact = `${fmt(gap)}pp improvement needed`; }
-        else if (k.name.includes('OTIF') || k.name.includes('Channel') || k.name.includes('Del')) { reason = 'Platform SLA miss + zone bottleneck'; action = 'Increase courier alignment, optimize zone routing'; impact = `${fmt(gap)}pp gap to close`; }
-        else if (k.name.includes('POD')) { reason = 'Courier POD upload delay'; action = 'Daily POD follow-up with courier ops team'; impact = `${fmt(gap)}pp improvement needed`; }
-        else if (k.name.includes('Appt') || k.name.includes('Non-Appt')) { reason = 'Late appointment booking'; action = 'Auto-appointment system, daily slot monitoring'; impact = `${fmt(gap)}pp gap`; }
+        else if (k.name.toLowerCase().includes('transit')) { reason = 'Courier delay + appointment pending'; action = 'Escalate aged shipments, auto-reschedule appointments'; impact = `${fmt(gap)}pp improvement needed`; }
+        else if (k.name.includes('RTO')) { reason = 'High return rate — address quality or COD issues'; action = 'Address verification, OTP for risky orders, COD hold for repeat RTO customers'; impact = `${fmt(gap)}pp RTO reduction needed`; }
+        else if (k.name.includes('OTIF') || k.name.includes('Channel') || k.name.includes('Delivery')) { reason = 'Platform SLA miss + zone bottleneck'; action = 'Increase courier alignment, optimize zone routing'; impact = `${fmt(gap)}pp gap to close`; }
+        else if (k.name.includes('POD')) { reason = 'Courier POD upload delay'; action = 'Daily POD follow-up with courier ops team, set 48h SLA'; impact = `${fmt(gap)}pp improvement needed`; }
+        else if (k.name.includes('Appt') || k.name.includes('Appointment')) { reason = 'Late appointment booking'; action = 'Auto-appointment system, daily slot monitoring'; impact = `${fmt(gap)}pp gap`; }
+        else if (k.name.includes('GRN')) { reason = 'Slow GRN closure at warehouse / platform reconciliation lag'; action = 'Daily GRN target, automate platform-portal reconciliation'; impact = `${fmt(gap)}pp gap to close`; }
+        else if (k.name.includes('Dispatch') || k.name.includes('Pickup')) { reason = 'Late picking / missed pickup windows'; action = 'Earlier picking cutoff, pickup-compliance tracker'; impact = `${fmt(gap)}pp improvement needed`; }
+        else if (k.name.includes('Quality') || k.name.includes('Packaging') || k.name.includes('Label')) { reason = 'Inconsistent packing / labeling SOP'; action = 'Daily quality audit, 2-person check at sealing stage'; impact = `${fmt(gap)}pp gap`; }
+        else if (k.name.includes('Doc')) { reason = 'Documentation compliance gaps (e-way bill, invoice mismatch)'; action = 'Daily doc-compliance check, platform-wise SOP training'; impact = `${fmt(gap)}pp gap`; }
+        else if (k.name.includes('Capacity') || k.name.includes('WH')) { reason = 'WH capacity underutilized / zone imbalance'; action = 'Real-time capacity dashboard, cross-zone load balancing'; impact = `${fmt(gap)}pp improvement needed`; }
         else { reason = 'Process gap identified'; action = 'Review SOP and implement corrective action'; impact = `${fmt(gap)}pp improvement required`; }
+        causes.push({ kpi: k.name, owner: k._ownerName, actual: k.actual, target: k.target, gap, unit: k.unit, inv: k.inv, weightage: k.w, reason, action, impact });
       }
     });
     return causes.sort((a, b) => (b.weightage || 0) - (a.weightage || 0));
@@ -990,16 +997,17 @@ export default function OKR() {
           const noAppt = transitAtTime.filter(r => !safeParseDate(r.appointmentDate));
           if (noAppt.length > 0) {
             const nT = noAppt.length;
-            let d02 = 0; noAppt.forEach(r => { const bd = safeParseDate(r.bookingDate); if (bd && Math.floor((refDate - bd) / 86400000) <= 2) d02++; });
+            let d02 = 0;
+            noAppt.forEach(r => { const bd = safeParseDate(r.bookingDate); if (bd && Math.floor((refDate - bd) / 86400000) <= 2) d02++; });
             autoActuals[m]['Non-Appt 0-2 Days %'] = parseFloat(percent(d02, nT).toFixed(1));
-          autoActuals[m]['Non-Appointment %'] = parseFloat(percent(d02, nT).toFixed(1));
-autoActuals[m]['Non-Appointment %'] = total > 0 ? parseFloat(percent(intransit.filter(r2 => safeParseDate(r2.appointmentDate)).length, intransit.length || 1).toFixed(1)) : null;
+            autoActuals[m]['Non-Appointment %'] = intransit.length > 0
+              ? parseFloat(percent(intransit.filter(r2 => safeParseDate(r2.appointmentDate)).length, intransit.length).toFixed(1))
+              : null;
           } else if (total > 0) {
-            /* If no in-transit found for past month, use appointment booking rate as proxy */
+            /* No in-transit found — fall back to overall appointment booking rate */
             const apptBooked = rows.filter(r => safeParseDate(r.appointmentDate)).length;
-            autoActuals[m]['Non-Appt 0-2 Days %'] = parseFloat(percent(d02, nT).toFixed(1));
-          autoActuals[m]['Non-Appointment %'] = total > 0 ? parseFloat(percent(apptBooked, total).toFixed(1)) : null;
-autoActuals[m]['Non-Appointment %'] = total > 0 ? parseFloat(percent(intransit.filter(r2 => safeParseDate(r2.appointmentDate)).length, intransit.length || 1).toFixed(1)) : null;
+            autoActuals[m]['Non-Appt 0-2 Days %'] = null;
+            autoActuals[m]['Non-Appointment %'] = parseFloat(percent(apptBooked, total).toFixed(1));
           }
 
           /* First Attempt Delivery % */
