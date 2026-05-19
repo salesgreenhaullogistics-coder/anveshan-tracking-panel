@@ -5,7 +5,8 @@ import DataTable from '../components/DataTable';
 import {
   ClipboardList, IndianRupee, AlertTriangle, TrendingUp, RefreshCw, Filter,
   Download, X, ChevronRight, Search, Truck, Building2, Package, CheckCircle,
-  Clock, FileText, ArrowDown, ArrowUp,
+  Clock, FileText, ArrowDown, ArrowUp, Activity, MapPin, BarChart3, Workflow,
+  Database, Trophy, Target,
 } from 'lucide-react';
 import { currency, percent, formatDate } from '../utils/index';
 
@@ -181,6 +182,9 @@ export default function GRN() {
     return { totalDeficitVal, totalDeficitUnits, totalItemVal, totalDispatched, totalGRN, openClaims, recoveredClaims: recoveredClaims.length, lostClaims: lostClaims.length, recoveredVal, lostVal, recoveryRate, deficitRate, byPlatform, byCourier, byWH, byHolder, byReason, byRemarks, bySKU, statusArr, ageBkts, monthArr };
   }, [data]);
 
+  /* ─── Tab state ──────────────────────────────────────────────────────── */
+  const [tab, setTab] = useState('overview'); // overview | top | sources | claims | raw
+
   /* ─── Drilldown ──────────────────────────────────────────────────────── */
   const [drill, setDrill] = useState(null); // { title, rows }
   const openDrill = (title, predicate) => {
@@ -312,6 +316,24 @@ export default function GRN() {
         </div>
       </div>
 
+      {/* ─── Tab Navigation ──────────────────────────────────────────── */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-1.5 flex items-center gap-1 overflow-x-auto">
+        {[
+          { k: 'overview', l: 'Overview', icon: BarChart3 },
+          { k: 'top', l: 'Top Performers', icon: Trophy },
+          { k: 'sources', l: 'Deficit Sources', icon: Target },
+          { k: 'claims', l: 'Claims Workflow', icon: Workflow },
+          { k: 'raw', l: `Raw Data (${data.length})`, icon: Database },
+        ].map(t => { const Icon = t.icon; return (
+          <button key={t.k} onClick={() => setTab(t.k)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-all whitespace-nowrap ${tab === t.k ? 'bg-gradient-to-r from-rose-500 to-orange-500 text-white shadow' : 'text-gray-600 hover:bg-gray-50'}`}>
+            <Icon className="w-3.5 h-3.5" /> {t.l}
+          </button>
+        ); })}
+      </div>
+
+      {/* ═══ OVERVIEW TAB ═══ */}
+      {tab === 'overview' && (<>
       {/* ─── Charts row ──────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <div className="chart-container">
@@ -404,13 +426,34 @@ export default function GRN() {
         </table></div>
       </div>
 
-      {/* ─── Full data table ─────────────────────────────────────────── */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-3">
-        <div className="flex items-center justify-between mb-2">
-          <h3 className="text-[12px] font-bold text-gray-700">Full deficit register ({data.length} rows)</h3>
+      </>)}
+      {/* end OVERVIEW tab */}
+
+      {/* ═══ TOP PERFORMERS TAB ═══ */}
+      {tab === 'top' && (
+        <TopPerformersTab stats={stats} data={data} setF={setF} openDrill={openDrill} />
+      )}
+
+      {/* ═══ DEFICIT SOURCES TAB ═══ */}
+      {tab === 'sources' && (
+        <DeficitSourcesTab data={data} openDrill={openDrill} />
+      )}
+
+      {/* ═══ CLAIMS WORKFLOW TAB ═══ */}
+      {tab === 'claims' && (
+        <ClaimsWorkflowTab data={data} stats={stats} openDrill={openDrill} />
+      )}
+
+      {/* ═══ RAW DATA TAB ═══ */}
+      {tab === 'raw' && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-3">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-[12px] font-bold text-gray-700 flex items-center gap-2"><Database className="w-4 h-4 text-rose-500" /> Full deficit register ({data.length} rows)</h3>
+            <span className="text-[10px] text-gray-400">All filters applied · use header sort + search · export below</span>
+          </div>
+          <DataTable data={data} columns={drillCols} pageSize={50} exportFilename="grn-deficit-register" />
         </div>
-        <DataTable data={data} columns={drillCols} pageSize={25} exportFilename="grn-deficit-register" />
-      </div>
+      )}
 
       </>)}
 
@@ -432,6 +475,366 @@ export default function GRN() {
         </div>
       )}
     </div>
+  );
+}
+
+/* ─── TOP PERFORMERS TAB ─────────────────────────────────────────────── */
+function TopPerformersTab({ stats, data, setF, openDrill }) {
+  const [mode, setMode] = useState('deficit'); // deficit | recovery | volume
+
+  /* WH used as 'Location' since no city field */
+  const sortKey = mode === 'deficit' ? 'deficitVal' : mode === 'recovery' ? 'recoveryPct' : 'count';
+  const dir = mode === 'recovery' ? 1 : 1; /* always desc */
+
+  const sortArr = (arr) => [...arr].sort((a, b) => (b[sortKey] - a[sortKey]) * dir);
+  const couriers  = sortArr(stats.byCourier).slice(0, 10);
+  const platforms = sortArr(stats.byPlatform).slice(0, 10);
+  const whs       = sortArr(stats.byWH).slice(0, 10);
+  const skus      = sortArr(stats.bySKU).slice(0, 15);
+
+  return (
+    <div className="space-y-3">
+      {/* Mode switcher */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-3 flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <h3 className="text-[12px] font-bold text-gray-800 flex items-center gap-2"><Trophy className="w-4 h-4 text-amber-500" /> Top Performers Leaderboard</h3>
+          <p className="text-[10px] text-gray-500">Ranked by selected metric · click any row to filter the whole page</p>
+        </div>
+        <div className="flex items-center gap-1 bg-gray-50 rounded-lg p-1">
+          {[
+            { k: 'deficit', l: 'By Deficit ₹' },
+            { k: 'recovery', l: 'By Recovery %' },
+            { k: 'volume', l: 'By Volume' },
+          ].map(m => (
+            <button key={m.k} onClick={() => setMode(m.k)} className={`text-[10px] px-3 py-1 rounded ${mode === m.k ? 'bg-white shadow font-bold text-rose-600' : 'text-gray-500'}`}>{m.l}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* 2x2 leaderboards */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <Leaderboard title="Top Couriers" icon={Truck} items={couriers} mode={mode} onPick={(name) => setF('courier', name)} accent="orange" />
+        <Leaderboard title="Top Platforms" icon={Building2} items={platforms} mode={mode} onPick={(name) => setF('platform', name)} accent="rose" />
+        <Leaderboard title="Top Locations (WH)" icon={MapPin} items={whs} mode={mode} onPick={(name) => setF('wh', name)} accent="indigo" />
+        <Leaderboard title="Top SKUs" icon={Package} items={skus} mode={mode} onPick={(name) => openDrill(`SKU ${name}`, r => r['SKU Code'] === name)} accent="emerald" mono />
+      </div>
+
+      {/* Worst-of-the-worst combined section */}
+      <div className="bg-gradient-to-br from-red-50 to-orange-50 border border-red-200 rounded-xl p-4">
+        <h3 className="text-[12px] font-bold text-red-700 flex items-center gap-2 mb-3"><AlertTriangle className="w-4 h-4" /> Worst Combinations — Highest Loss</h3>
+        <p className="text-[10px] text-gray-600 mb-2">Courier × Platform pairs ranked by total deficit (helps identify which courier-platform combos to renegotiate)</p>
+        <WorstCombinations data={data} />
+      </div>
+    </div>
+  );
+}
+
+function Leaderboard({ title, icon: Icon, items, mode, onPick, accent, mono }) {
+  const max = Math.max(...items.map(i => i.deficitVal), 1);
+  const accentColors = { orange: 'bg-orange-500', rose: 'bg-rose-500', indigo: 'bg-indigo-500', emerald: 'bg-emerald-500' };
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-gray-100 flex items-center gap-2 bg-gray-50/50">
+        <Icon className={`w-3.5 h-3.5 text-${accent}-600`} />
+        <h3 className="text-[11px] font-bold text-gray-700">{title}</h3>
+      </div>
+      <div className="overflow-x-auto"><table className="w-full text-[10px]">
+        <thead><tr className="border-b border-gray-100 bg-gray-50/30">
+          <th className="px-2 py-1.5 text-left font-semibold text-gray-500 w-6">#</th>
+          <th className="px-2 py-1.5 text-left font-semibold text-gray-500">Name</th>
+          <th className="px-2 py-1.5 text-right font-semibold text-gray-500">Records</th>
+          <th className="px-2 py-1.5 text-right font-semibold text-rose-600">Deficit ₹</th>
+          <th className="px-2 py-1.5 text-right font-semibold text-emerald-600">Recovery %</th>
+        </tr></thead>
+        <tbody className="divide-y divide-gray-50">
+          {items.map((it, i) => {
+            const w = it.deficitVal / max * 100;
+            return (
+              <tr key={it.name} onClick={() => onPick(it.name)} className="hover:bg-rose-50/40 cursor-pointer">
+                <td className="px-2 py-1.5 font-bold text-gray-400">{i + 1}</td>
+                <td className={`px-2 py-1.5 ${mono ? 'font-mono text-[9px]' : 'font-medium'} text-gray-800 truncate max-w-[180px]`} title={it.name}>{it.name}</td>
+                <td className="px-2 py-1.5 text-right text-gray-600">{it.count}</td>
+                <td className="px-2 py-1.5 text-right">
+                  <div className="flex flex-col items-end">
+                    <span className="text-rose-600 font-bold">{currency(it.deficitVal)}</span>
+                    <div className="w-20 h-0.5 bg-gray-100 rounded-full mt-0.5 overflow-hidden"><div className={`h-full ${accentColors[accent]} rounded-full`} style={{ width: `${w}%` }} /></div>
+                  </div>
+                </td>
+                <td className="px-2 py-1.5 text-right font-bold" style={{ color: it.recoveryPct >= 70 ? '#059669' : it.recoveryPct >= 40 ? '#d97706' : '#dc2626' }}>{it.recoveryPct.toFixed(0)}%</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table></div>
+    </div>
+  );
+}
+
+function WorstCombinations({ data }) {
+  const combos = useMemo(() => {
+    const m = {};
+    data.forEach(r => {
+      const c = `${r['Order Type'] || '?'} × ${r['Carrier/Shipping Partner'] || '?'}`;
+      if (!m[c]) m[c] = { name: c, count: 0, val: 0, recovered: 0 };
+      m[c].count++;
+      m[c].val += num(r['Deficit Value']);
+      if (isRecovered(r['Claim Status'], r['Claim Final Status'])) m[c].recovered += num(r['Deficit Value']);
+    });
+    return Object.values(m).map(x => ({ ...x, recoveryPct: x.val > 0 ? (x.recovered / x.val * 100) : 0 })).sort((a, b) => b.val - a.val).slice(0, 10);
+  }, [data]);
+  const max = Math.max(...combos.map(c => c.val), 1);
+  return (
+    <div className="space-y-1">
+      {combos.map(c => {
+        const w = c.val / max * 100;
+        return (
+          <div key={c.name} className="flex items-center gap-2 text-[10px] bg-white rounded p-1.5 border border-red-100">
+            <span className="flex-1 font-medium text-gray-700 truncate">{c.name}</span>
+            <span className="w-12 text-right text-gray-500">{c.count}</span>
+            <div className="w-40 h-1.5 bg-red-50 rounded-full overflow-hidden"><div className="h-full bg-red-500 rounded-full" style={{ width: `${w}%` }} /></div>
+            <span className="w-24 text-right text-rose-700 font-bold">{currency(c.val)}</span>
+            <span className="w-12 text-right font-bold" style={{ color: c.recoveryPct >= 70 ? '#059669' : c.recoveryPct >= 40 ? '#d97706' : '#dc2626' }}>{c.recoveryPct.toFixed(0)}%</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ─── DEFICIT SOURCES TAB ─────────────────────────────────────────────── */
+function DeficitSourcesTab({ data, openDrill }) {
+  /* Reason × Courier matrix */
+  const matrix = useMemo(() => {
+    const reasons = new Set(), couriers = new Set();
+    const m = {};
+    data.forEach(r => {
+      const reason = (r['Claim Reason'] || 'Unknown').toString();
+      const courier = (r['Carrier/Shipping Partner'] || 'Unknown').toString();
+      reasons.add(reason); couriers.add(courier);
+      const k = `${reason}||${courier}`;
+      if (!m[k]) m[k] = { count: 0, val: 0 };
+      m[k].count++;
+      m[k].val += num(r['Deficit Value']);
+    });
+    /* Limit to top 8 reasons & top 8 couriers by total deficit */
+    const reasonTotals = {}, courierTotals = {};
+    Object.entries(m).forEach(([k, v]) => { const [reason, courier] = k.split('||'); reasonTotals[reason] = (reasonTotals[reason] || 0) + v.val; courierTotals[courier] = (courierTotals[courier] || 0) + v.val; });
+    const topReasons = Object.entries(reasonTotals).sort((a, b) => b[1] - a[1]).slice(0, 8).map(x => x[0]);
+    const topCouriers = Object.entries(courierTotals).sort((a, b) => b[1] - a[1]).slice(0, 8).map(x => x[0]);
+    const max = Math.max(...Object.values(m).map(v => v.val), 1);
+    return { reasons: topReasons, couriers: topCouriers, m, max };
+  }, [data]);
+
+  /* Remarks × Platform similar */
+  const matrix2 = useMemo(() => {
+    const m = {};
+    data.forEach(r => {
+      const remarks = (r['GRN Remarks'] || 'Unknown').toString();
+      const platform = (r['Order Type'] || 'Unknown').toString();
+      const k = `${remarks}||${platform}`;
+      if (!m[k]) m[k] = { count: 0, val: 0 };
+      m[k].count++;
+      m[k].val += num(r['Deficit Value']);
+    });
+    const remarksTotals = {}, platformTotals = {};
+    Object.entries(m).forEach(([k, v]) => { const [remarks, platform] = k.split('||'); remarksTotals[remarks] = (remarksTotals[remarks] || 0) + v.val; platformTotals[platform] = (platformTotals[platform] || 0) + v.val; });
+    const topRemarks = Object.entries(remarksTotals).sort((a, b) => b[1] - a[1]).slice(0, 8).map(x => x[0]);
+    const topPlatforms = Object.entries(platformTotals).sort((a, b) => b[1] - a[1]).slice(0, 8).map(x => x[0]);
+    const max = Math.max(...Object.values(m).map(v => v.val), 1);
+    return { remarks: topRemarks, platforms: topPlatforms, m, max };
+  }, [data]);
+
+  /* Root cause: what's the dominant reason? */
+  const rootCause = useMemo(() => {
+    const reasons = {};
+    data.forEach(r => {
+      const reason = (r['Claim Reason'] || 'Unknown').toString();
+      if (!reasons[reason]) reasons[reason] = { count: 0, val: 0 };
+      reasons[reason].count++;
+      reasons[reason].val += num(r['Deficit Value']);
+    });
+    const total = Object.values(reasons).reduce((s, x) => s + x.val, 0);
+    return Object.entries(reasons).map(([name, v]) => ({ name, ...v, pct: total > 0 ? (v.val / total * 100) : 0 })).sort((a, b) => b.val - a.val);
+  }, [data]);
+
+  return (
+    <div className="space-y-3">
+      {/* Root cause Pareto */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h3 className="text-[12px] font-bold text-gray-800 flex items-center gap-2"><Target className="w-4 h-4 text-rose-500" /> Root Cause — Pareto Analysis</h3>
+            <p className="text-[10px] text-gray-500">Top reasons contributing to total deficit (80/20 rule: focus on top contributors)</p>
+          </div>
+        </div>
+        <div className="space-y-1.5">
+          {(() => { let cum = 0; return rootCause.slice(0, 10).map((rc, i) => {
+            cum += rc.pct;
+            const tier = cum <= 80 ? 'bg-red-500' : cum <= 95 ? 'bg-amber-500' : 'bg-gray-300';
+            return (
+              <div key={rc.name} className="flex items-center gap-2 text-[10px]">
+                <span className="w-5 font-bold text-gray-400">{i + 1}</span>
+                <span className="flex-1 text-gray-700 truncate" title={rc.name}>{rc.name}</span>
+                <div className="w-64 h-4 bg-gray-50 rounded overflow-hidden"><div className={`h-full ${tier} rounded`} style={{ width: `${rc.pct}%` }} /></div>
+                <span className="w-12 text-right font-bold text-rose-600">{rc.pct.toFixed(1)}%</span>
+                <span className="w-12 text-right text-gray-500">cum {cum.toFixed(0)}%</span>
+                <span className="w-24 text-right font-mono text-gray-700">{currency(rc.val)}</span>
+              </div>
+            );
+          }); })()}
+        </div>
+        <p className="text-[9px] text-gray-400 mt-2">🔴 Top 80% (Vital Few — focus here) · 🟡 80-95% (Important) · ⚪ Trivial Many</p>
+      </div>
+
+      {/* Reason × Courier heatmap */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+        <h3 className="text-[12px] font-bold text-gray-800 mb-2 flex items-center gap-2"><Activity className="w-4 h-4 text-indigo-500" /> Reason × Courier Heatmap</h3>
+        <p className="text-[10px] text-gray-500 mb-3">Cell darkness = deficit ₹. Click any cell to drill down.</p>
+        <Heatmap rows={matrix.reasons} cols={matrix.couriers} cellGet={(r, c) => matrix.m[`${r}||${c}`] || { count: 0, val: 0 }} max={matrix.max}
+          onClick={(reason, courier) => openDrill(`${reason} × ${courier}`, x => x['Claim Reason'] === reason && x['Carrier/Shipping Partner'] === courier)} />
+      </div>
+
+      {/* Remarks × Platform heatmap */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+        <h3 className="text-[12px] font-bold text-gray-800 mb-2 flex items-center gap-2"><Activity className="w-4 h-4 text-purple-500" /> GRN Remarks × Platform Heatmap</h3>
+        <p className="text-[10px] text-gray-500 mb-3">Where does each type of deficit happen?</p>
+        <Heatmap rows={matrix2.remarks} cols={matrix2.platforms} cellGet={(r, c) => matrix2.m[`${r}||${c}`] || { count: 0, val: 0 }} max={matrix2.max}
+          onClick={(remarks, platform) => openDrill(`${remarks} × ${platform}`, x => x['GRN Remarks'] === remarks && x['Order Type'] === platform)} />
+      </div>
+    </div>
+  );
+}
+
+function Heatmap({ rows, cols, cellGet, max, onClick }) {
+  if (rows.length === 0 || cols.length === 0) return <p className="text-[10px] text-gray-400">No data</p>;
+  return (
+    <div className="overflow-x-auto"><table className="text-[9px]">
+      <thead><tr>
+        <th className="px-2 py-1 text-left bg-gray-50 sticky left-0 z-10"></th>
+        {cols.map(c => <th key={c} className="px-2 py-1 text-left font-semibold text-gray-600 min-w-[80px]" title={c}>{c.length > 12 ? c.slice(0, 12) + '…' : c}</th>)}
+      </tr></thead>
+      <tbody>
+        {rows.map(r => (
+          <tr key={r}>
+            <th className="px-2 py-1 text-left font-semibold text-gray-700 sticky left-0 bg-white z-10 min-w-[160px]" title={r}>{r.length > 22 ? r.slice(0, 22) + '…' : r}</th>
+            {cols.map(c => {
+              const cell = cellGet(r, c);
+              const intensity = max > 0 ? cell.val / max : 0;
+              const bg = intensity > 0 ? `rgba(220, 38, 38, ${Math.min(0.05 + intensity * 0.9, 0.95)})` : '#f9fafb';
+              const textColor = intensity > 0.5 ? '#fff' : '#374151';
+              return (
+                <td key={c} onClick={() => cell.count > 0 && onClick(r, c)}
+                  className={`px-2 py-1.5 text-center ${cell.count > 0 ? 'cursor-pointer hover:ring-2 hover:ring-indigo-400' : ''}`}
+                  style={{ background: bg, color: textColor }} title={cell.count > 0 ? `${cell.count} records · ${currency(cell.val)}` : ''}>
+                  {cell.count > 0 ? <><div className="font-bold">{currency(cell.val)}</div><div className="text-[8px] opacity-80">{cell.count}</div></> : <span className="text-gray-300">—</span>}
+                </td>
+              );
+            })}
+          </tr>
+        ))}
+      </tbody>
+    </table></div>
+  );
+}
+
+/* ─── CLAIMS WORKFLOW TAB ────────────────────────────────────────────── */
+function ClaimsWorkflowTab({ data, stats, openDrill }) {
+  /* Funnel: Total → Open → Recovered / Lost */
+  const total = data.length;
+  const totalVal = data.reduce((s, r) => s + num(r['Deficit Value']), 0);
+  const open = data.filter(r => isOpen(r['Claim Status']) && !isRecovered(r['Claim Status'], r['Claim Final Status']));
+  const recovered = data.filter(r => isRecovered(r['Claim Status'], r['Claim Final Status']));
+  const lost = data.filter(r => isLost(r['Claim Final Status']));
+  const other = total - open.length - recovered.length - lost.length;
+  const openVal = open.reduce((s, r) => s + num(r['Deficit Value']), 0);
+  const recVal = recovered.reduce((s, r) => s + num(r['Deficit Value']), 0);
+  const lostVal = lost.reduce((s, r) => s + num(r['Deficit Value']), 0);
+
+  /* Status × Holder matrix */
+  const statusHolderMatrix = useMemo(() => {
+    const m = {}; const statuses = new Set(); const holders = new Set();
+    data.forEach(r => {
+      const s = (r['Claim Status'] || 'Unknown').toString();
+      const h = (r['Claim Holder'] || 'Unknown').toString();
+      statuses.add(s); holders.add(h);
+      const k = `${s}||${h}`;
+      if (!m[k]) m[k] = { count: 0, val: 0 };
+      m[k].count++; m[k].val += num(r['Deficit Value']);
+    });
+    return { statuses: Array.from(statuses), holders: Array.from(holders), m, max: Math.max(...Object.values(m).map(v => v.val), 1) };
+  }, [data]);
+
+  return (
+    <div className="space-y-3">
+      {/* Funnel */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+        <h3 className="text-[12px] font-bold text-gray-800 mb-3 flex items-center gap-2"><Workflow className="w-4 h-4 text-indigo-500" /> Claims Funnel</h3>
+        <div className="space-y-2">
+          <FunnelStep label="Total deficit records raised" count={total} val={totalVal} max={total} color="bg-gray-400" onClick={() => openDrill('All records', () => true)} />
+          <FunnelStep label="Open claims — pending action" count={open.length} val={openVal} max={total} color="bg-amber-500" onClick={() => openDrill('Open claims', r => isOpen(r['Claim Status']) && !isRecovered(r['Claim Status'], r['Claim Final Status']))} />
+          <FunnelStep label="Recovered ✓" count={recovered.length} val={recVal} max={total} color="bg-emerald-500" onClick={() => openDrill('Recovered', r => isRecovered(r['Claim Status'], r['Claim Final Status']))} />
+          <FunnelStep label="Lost / Rejected ✕" count={lost.length} val={lostVal} max={total} color="bg-red-500" onClick={() => openDrill('Lost', r => isLost(r['Claim Final Status']))} />
+          {other > 0 && <FunnelStep label="Other / Indeterminate" count={other} val={totalVal - openVal - recVal - lostVal} max={total} color="bg-gray-300" />}
+        </div>
+        <div className="grid grid-cols-3 gap-2 mt-3 text-center">
+          <div className="bg-amber-50 rounded-lg p-2"><p className="text-[9px] text-gray-500 uppercase">Open Exposure</p><p className="text-lg font-bold text-amber-700">{currency(openVal)}</p></div>
+          <div className="bg-emerald-50 rounded-lg p-2"><p className="text-[9px] text-gray-500 uppercase">Recovered</p><p className="text-lg font-bold text-emerald-700">{currency(recVal)}</p><p className="text-[9px] text-emerald-600">{totalVal > 0 ? (recVal / totalVal * 100).toFixed(1) : 0}% rate</p></div>
+          <div className="bg-red-50 rounded-lg p-2"><p className="text-[9px] text-gray-500 uppercase">Lost</p><p className="text-lg font-bold text-red-700">{currency(lostVal)}</p><p className="text-[9px] text-red-600">{totalVal > 0 ? (lostVal / totalVal * 100).toFixed(1) : 0}% rate</p></div>
+        </div>
+      </div>
+
+      {/* Status × Holder matrix */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+        <h3 className="text-[12px] font-bold text-gray-800 mb-2 flex items-center gap-2"><Activity className="w-4 h-4 text-indigo-500" /> Claim Status × Holder Matrix</h3>
+        <p className="text-[10px] text-gray-500 mb-3">Where are claims stuck? Cell shows deficit ₹ + record count.</p>
+        <Heatmap rows={statusHolderMatrix.statuses.slice(0, 12)} cols={statusHolderMatrix.holders.slice(0, 8)}
+          cellGet={(r, c) => statusHolderMatrix.m[`${r}||${c}`] || { count: 0, val: 0 }} max={statusHolderMatrix.max}
+          onClick={(s, h) => openDrill(`${s} × ${h}`, x => x['Claim Status'] === s && x['Claim Holder'] === h)} />
+      </div>
+
+      {/* Aging heatmap by holder */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+        <h3 className="text-[12px] font-bold text-gray-800 mb-2 flex items-center gap-2"><Clock className="w-4 h-4 text-amber-500" /> Open Claim Aging × Holder</h3>
+        <p className="text-[10px] text-gray-500 mb-3">Find aged claims by responsibility owner.</p>
+        {(() => {
+          const m = {}; const holders = new Set();
+          data.forEach(r => {
+            if (isRecovered(r['Claim Status'], r['Claim Final Status'])) return;
+            const h = (r['Claim Holder'] || 'Unknown').toString();
+            const days = daysSince(r['Claim Date']);
+            const b = ageBucket(days);
+            holders.add(h);
+            const k = `${b}||${h}`;
+            if (!m[k]) m[k] = { count: 0, val: 0 };
+            m[k].count++; m[k].val += num(r['Deficit Value']);
+          });
+          const max = Math.max(...Object.values(m).map(v => v.val), 1);
+          return (
+            <Heatmap rows={AGE_ORDER.filter(a => Object.keys(m).some(k => k.startsWith(a + '||')))} cols={Array.from(holders).slice(0, 8)}
+              cellGet={(r, c) => m[`${r}||${c}`] || { count: 0, val: 0 }} max={max}
+              onClick={(age, holder) => openDrill(`${age} × ${holder}`, x => {
+                if (isRecovered(x['Claim Status'], x['Claim Final Status'])) return false;
+                return ageBucket(daysSince(x['Claim Date'])) === age && (x['Claim Holder'] || 'Unknown') === holder;
+              })} />
+          );
+        })()}
+      </div>
+    </div>
+  );
+}
+
+function FunnelStep({ label, count, val, max, color, onClick }) {
+  const w = max > 0 ? (count / max * 100) : 0;
+  return (
+    <button onClick={onClick} disabled={!onClick} className={`w-full flex items-center gap-2 text-[11px] ${onClick ? 'hover:bg-gray-50 cursor-pointer' : ''} rounded p-1.5 -mx-1 transition-colors`}>
+      <span className="w-56 text-left font-medium text-gray-700">{label}</span>
+      <div className="flex-1 h-6 bg-gray-50 rounded overflow-hidden">
+        <div className={`h-full ${color} rounded flex items-center px-2 transition-all`} style={{ width: `${w}%` }}>
+          <span className="text-[10px] font-bold text-white">{count.toLocaleString('en-IN')} ({w.toFixed(1)}%)</span>
+        </div>
+      </div>
+      <span className="w-28 text-right text-gray-700 font-mono font-bold">{currency(val)}</span>
+    </button>
   );
 }
 
