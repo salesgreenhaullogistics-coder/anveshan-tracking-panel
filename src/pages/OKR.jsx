@@ -276,13 +276,27 @@ export default function OKR() {
   const [poaFilter, setPoaFilter] = useState('all'); // all | open | done | mine
   const updatePoa = (key, patch) => setPoaState(p => { const n = { ...p, [key]: { ...(p[key] || {}), ...patch } }; localStorage.setItem('okr-poa', JSON.stringify(n)); return n; });
 
+  /* KPI month scope — controls Executive Summary actuals. Defaults to most recent month with data. */
+  const [kpiMonth, setKpiMonth] = useState('rolling'); // 'rolling' = 12-month rolling, or specific month like "Mar'26"
+
   const now = new Date();
   const cur = KPI_OWNERS.find(o => o.key === owner);
 
   /* ═══ Compute actuals from shipment data ═══ */
   const actuals = useMemo(() => {
-    const cutoff = new Date(now.getFullYear(), now.getMonth() - 12, 1);
-    const recent = data.filter(r => { const bd = safeParseDate(r.bookingDate); return !bd || bd >= cutoff; });
+    let recent, refDate = now;
+    if (kpiMonth !== 'rolling') {
+      /* Scope to selected month + use month-end as age reference (matches Monthly Tracking) */
+      recent = data.filter(r => r.month === kpiMonth);
+      const MABBR2 = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      const mIdx = MABBR2.indexOf(kpiMonth.slice(0, 3));
+      const mYr = parseInt('20' + kpiMonth.slice(4)) || 2026;
+      const monthEnd = new Date(mYr, mIdx + 1, 0);
+      refDate = monthEnd < now ? monthEnd : now; /* past months use month-end; current month uses now */
+    } else {
+      const cutoff = new Date(now.getFullYear(), now.getMonth() - 12, 1);
+      recent = data.filter(r => { const bd = safeParseDate(r.bookingDate); return !bd || bd >= cutoff; });
+    }
     const del = recent.filter(r => isDelivered(r.status) || isPartialDelivered(r.status));
     const rto = recent.filter(r => isRTO(r.status));
     const intransit = recent.filter(r => isInTransit(r.status) || isOFD(r.status));
@@ -300,7 +314,7 @@ export default function OKR() {
     const avgTAT = tatVals.length ? tatVals.reduce((a, b) => a + b, 0) / tatVals.length : 0;
 
     const ageBkts = { '0-7': 0, '8-15': 0, '16-20': 0, '21-30': 0, '30+': 0 };
-    intransit.forEach(r => { const bd = safeParseDate(r.bookingDate); if (bd) { const age = Math.floor((now - bd) / 86400000); if (age <= 7) ageBkts['0-7']++; else if (age <= 15) ageBkts['8-15']++; else if (age <= 20) ageBkts['16-20']++; else if (age <= 30) ageBkts['21-30']++; else ageBkts['30+']++; } });
+    intransit.forEach(r => { const bd = safeParseDate(r.bookingDate); if (bd) { const age = Math.floor((refDate - bd) / 86400000); if (age <= 7) ageBkts['0-7']++; else if (age <= 15) ageBkts['8-15']++; else if (age <= 20) ageBkts['16-20']++; else if (age <= 30) ageBkts['21-30']++; else ageBkts['30+']++; } });
     const intTotal = intransit.length || 1;
     const agePcts = {}; for (const [k, v] of Object.entries(ageBkts)) agePcts[k] = percent(v, intTotal);
 
@@ -315,13 +329,13 @@ export default function OKR() {
     const apptPct = intransit.length > 0 ? percent(withAppt, intransit.length) : 0;
     const noAppt = intransit.filter(r => !safeParseDate(r.appointmentDate));
     const noApptBkts = { '0-2': 0, '3-5': 0, '6-10': 0, '11-15': 0, '15+': 0 };
-    noAppt.forEach(r => { const bd = safeParseDate(r.bookingDate); if (bd) { const age = Math.floor((now - bd) / 86400000); if (age <= 2) noApptBkts['0-2']++; else if (age <= 5) noApptBkts['3-5']++; else if (age <= 10) noApptBkts['6-10']++; else if (age <= 15) noApptBkts['11-15']++; else noApptBkts['15+']++; } });
+    noAppt.forEach(r => { const bd = safeParseDate(r.bookingDate); if (bd) { const age = Math.floor((refDate - bd) / 86400000); if (age <= 2) noApptBkts['0-2']++; else if (age <= 5) noApptBkts['3-5']++; else if (age <= 10) noApptBkts['6-10']++; else if (age <= 15) noApptBkts['11-15']++; else noApptBkts['15+']++; } });
     const noApptTotal = noAppt.length || 1;
     const noApptPcts = {}; for (const [k, v] of Object.entries(noApptBkts)) noApptPcts[k] = percent(v, noApptTotal);
 
     /* B2B RTO tracking */
     const rtoAgeBkts = { '0-7': 0, '8-15': 0, '16-30': 0, '30+': 0 };
-    rto.forEach(r => { const bd = safeParseDate(r.bookingDate); if (bd) { const age = Math.floor((now - bd) / 86400000); if (age <= 7) rtoAgeBkts['0-7']++; else if (age <= 15) rtoAgeBkts['8-15']++; else if (age <= 30) rtoAgeBkts['16-30']++; else rtoAgeBkts['30+']++; } });
+    rto.forEach(r => { const bd = safeParseDate(r.bookingDate); if (bd) { const age = Math.floor((refDate - bd) / 86400000); if (age <= 7) rtoAgeBkts['0-7']++; else if (age <= 15) rtoAgeBkts['8-15']++; else if (age <= 30) rtoAgeBkts['16-30']++; else rtoAgeBkts['30+']++; } });
     const rtoTotal = rto.length || 1;
     const rtoAgePcts = {}; for (const [k, v] of Object.entries(rtoAgeBkts)) rtoAgePcts[k] = percent(v, rtoTotal);
     /* Platform RTO */
@@ -336,6 +350,19 @@ export default function OKR() {
     });
 
     return { delPct, rtoPct, costPct, avgTAT, agePcts, platDel, podPct, apptPct, noApptPcts, rtoAgePcts, platRTO, monthTrend, total, delivered: del.length, rto: rto.length, intransit: intransit.length };
+  }, [data, kpiMonth]);
+
+  /* Available months for selector (from data) */
+  const availableMonths = useMemo(() => {
+    const set = new Set();
+    data.forEach(r => { if (r.month && r.month.includes("'")) set.add(r.month); });
+    /* Sort chronologically using MABBR */
+    const MABBR2 = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return Array.from(set).sort((a, b) => {
+      const ya = parseInt('20' + a.slice(4)), yb = parseInt('20' + b.slice(4));
+      const ma = MABBR2.indexOf(a.slice(0, 3)), mb = MABBR2.indexOf(b.slice(0, 3));
+      return (yb * 12 + mb) - (ya * 12 + ma); /* most recent first */
+    });
   }, [data]);
 
   /* ═══ KPI definitions per owner ═══ */
@@ -557,13 +584,26 @@ export default function OKR() {
         )}
       </div>
 
-      {/* View tabs */}
-      <div className="flex flex-wrap gap-1.5">
+      {/* View tabs + KPI month scope */}
+      <div className="flex flex-wrap items-center gap-1.5">
         {VIEWS.map(v => { const Icon = v.icon; return (
           <button key={v.key} onClick={() => setView(v.key)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-all ${view === v.key ? 'bg-indigo-500 text-white shadow-sm' : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50'}`}><Icon className="w-3.5 h-3.5" />{v.label}</button>
         ); })}
         <div className="w-px h-6 bg-gray-200 mx-1 self-center" />
         {PERIODS.map(p => <button key={p} onClick={() => setPeriod(p)} className={`text-[10px] px-2 py-1 rounded-lg font-medium ${period === p ? 'bg-indigo-100 text-indigo-700' : 'text-gray-400'}`}>{p}</button>)}
+        {(view === 'executive' || view === 'scorecard') && (
+          <>
+            <div className="w-px h-6 bg-gray-200 mx-1 self-center" />
+            <span className="text-[10px] text-gray-500 font-medium">Scope:</span>
+            <select value={kpiMonth} onChange={e => setKpiMonth(e.target.value)} className="text-[10px] px-2 py-1 border border-indigo-200 rounded bg-white text-indigo-700 font-semibold">
+              <option value="rolling">12-month rolling</option>
+              {availableMonths.map(m => <option key={m} value={m}>{m} only</option>)}
+            </select>
+            {kpiMonth !== 'rolling' && (
+              <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">Matches Monthly Tracking for {kpiMonth}</span>
+            )}
+          </>
+        )}
       </div>
 
       {/* ═══ EXECUTIVE SUMMARY ═══ */}
