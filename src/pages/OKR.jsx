@@ -424,7 +424,6 @@ export default function OKR() {
             { label: 'No Appt (15+d)', value: a.noApptPcts['15+'], target: 0, good: false },
           ]},
         { name: 'Non-Appt 0-2 Days %', w: 3, actual: a.noApptPcts['0-2'], target: 90, base: 84, high: 95, exc: 100, unit: '%' },
-        { name: 'Doc Issues %', w: 5, actual: 98, target: 98.5, base: 98, high: 99, exc: 100, unit: '%' },
       ],
       nandlal: [
         { name: 'GRN Recovery %', w: 35, actual: 90, target: 93, base: 90, high: 97, exc: 100, unit: '%' },
@@ -447,9 +446,9 @@ export default function OKR() {
             { label: 'Swiggy', value: 98, target: 99, good: true },
             { label: 'Amazon', value: 98, target: 99, good: true },
           ]},
-        { name: 'Doc Issues %', w: 10, actual: 98, target: 98.5, base: 98, high: 99, exc: 100, unit: '%' },
       ],
       anoop: [
+        { name: 'Doc Issues %', w: 10, actual: 98, target: 98.5, base: 98, high: 99, exc: 100, unit: '%' },
         { name: 'Dispatch & Pickup', w: 55, actual: 90, target: 93, base: 88, high: 96, exc: 99, unit: '%',
           sub: [
             { label: 'Same Day Dispatch', value: 92, target: 95, good: true },
