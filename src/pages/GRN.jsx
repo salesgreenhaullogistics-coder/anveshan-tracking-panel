@@ -6,7 +6,7 @@ import {
   ClipboardList, IndianRupee, AlertTriangle, TrendingUp, RefreshCw, Filter,
   Download, X, ChevronRight, Search, Truck, Building2, Package, CheckCircle,
   Clock, FileText, ArrowDown, ArrowUp, Activity, MapPin, BarChart3, Workflow,
-  Database, Trophy, Target,
+  Database, Trophy, Target, Zap, Lightbulb, Brain, Flame, Calculator, Layers,
 } from 'lucide-react';
 import { currency, percent, formatDate } from '../utils/index';
 
@@ -320,6 +320,7 @@ export default function GRN() {
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-1.5 flex items-center gap-1 overflow-x-auto">
         {[
           { k: 'overview', l: 'Overview', icon: BarChart3 },
+          { k: 'insights', l: 'Insights & Predictions', icon: Brain },
           { k: 'top', l: 'Top Performers', icon: Trophy },
           { k: 'sources', l: 'Deficit Sources', icon: Target },
           { k: 'claims', l: 'Claims Workflow', icon: Workflow },
@@ -334,6 +335,8 @@ export default function GRN() {
 
       {/* ═══ OVERVIEW TAB ═══ */}
       {tab === 'overview' && (<>
+      {/* Smart Insights strip — auto-detected callouts */}
+      <SmartInsights stats={stats} data={data} setF={setF} />
       {/* ─── Charts row ──────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <div className="chart-container">
@@ -429,6 +432,11 @@ export default function GRN() {
       </>)}
       {/* end OVERVIEW tab */}
 
+      {/* ═══ INSIGHTS & PREDICTIONS TAB ═══ */}
+      {tab === 'insights' && (
+        <InsightsTab data={data} stats={stats} openDrill={openDrill} />
+      )}
+
       {/* ═══ TOP PERFORMERS TAB ═══ */}
       {tab === 'top' && (
         <TopPerformersTab stats={stats} data={data} setF={setF} openDrill={openDrill} />
@@ -446,12 +454,15 @@ export default function GRN() {
 
       {/* ═══ RAW DATA TAB ═══ */}
       {tab === 'raw' && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-3">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="text-[12px] font-bold text-gray-700 flex items-center gap-2"><Database className="w-4 h-4 text-rose-500" /> Full deficit register ({data.length} rows)</h3>
-            <span className="text-[10px] text-gray-400">All filters applied · use header sort + search · export below</span>
+        <div className="space-y-3">
+          <PivotBuilder data={data} openDrill={openDrill} />
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-3">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-[12px] font-bold text-gray-700 flex items-center gap-2"><Database className="w-4 h-4 text-rose-500" /> Full deficit register ({data.length} rows)</h3>
+              <span className="text-[10px] text-gray-400">All filters applied · sort + search · export below</span>
+            </div>
+            <DataTable data={data} columns={drillCols} pageSize={50} exportFilename="grn-deficit-register" />
           </div>
-          <DataTable data={data} columns={drillCols} pageSize={50} exportFilename="grn-deficit-register" />
         </div>
       )}
 
@@ -835,6 +846,448 @@ function FunnelStep({ label, count, val, max, color, onClick }) {
       </div>
       <span className="w-28 text-right text-gray-700 font-mono font-bold">{currency(val)}</span>
     </button>
+  );
+}
+
+/* ─── SMART INSIGHTS STRIP — auto-detected callouts ──────────────────── */
+function SmartInsights({ stats, data, setF }) {
+  const insights = useMemo(() => {
+    const out = [];
+    /* 1. Worst courier (highest deficit + lowest recovery) */
+    const worstCourier = stats.byCourier.filter(c => c.recoveryPct < 50 && c.deficitVal > 0).sort((a, b) => b.deficitVal - a.deficitVal)[0];
+    if (worstCourier) {
+      out.push({
+        kind: 'critical', icon: Flame, title: 'High-loss courier needs renegotiation',
+        body: <><strong>{worstCourier.name}</strong> has <strong className="text-rose-700">{currency(worstCourier.deficitVal)}</strong> deficit with only <strong className="text-red-600">{worstCourier.recoveryPct.toFixed(0)}%</strong> recovery — escalate or switch volumes.</>,
+        cta: 'Filter to this courier', onCta: () => setF('courier', worstCourier.name),
+      });
+    }
+    /* 2. Dominant root-cause */
+    const totalVal = stats.byReason.reduce((s, r) => s + r.deficitVal, 0);
+    const dominant = stats.byReason[0];
+    if (dominant && totalVal > 0 && (dominant.deficitVal / totalVal) > 0.3) {
+      out.push({
+        kind: 'warn', icon: Target, title: 'One reason dominates the deficit',
+        body: <><strong>{dominant.name}</strong> accounts for <strong className="text-amber-700">{(dominant.deficitVal / totalVal * 100).toFixed(0)}%</strong> of total deficit ({currency(dominant.deficitVal)}) — fix this root cause first.</>,
+        cta: 'Filter to this reason', onCta: () => setF('reason', dominant.name),
+      });
+    }
+    /* 3. Aged claims sitting unrecovered */
+    const aged60 = stats.ageBkts['60+d'];
+    if (aged60 && aged60.c > 0) {
+      out.push({
+        kind: 'critical', icon: Clock, title: 'Aged claims at risk of write-off',
+        body: <><strong className="text-red-700">{aged60.c}</strong> claims older than 60 days holding <strong>{currency(aged60.v)}</strong> — recovery probability drops sharply after 60 days. Immediate escalation needed.</>,
+        cta: 'View aged claims', onCta: null,
+      });
+    }
+    /* 4. Recovery rate health */
+    if (stats.recoveryRate > 0) {
+      const tone = stats.recoveryRate >= 70 ? 'good' : stats.recoveryRate >= 40 ? 'warn' : 'critical';
+      out.push({
+        kind: tone, icon: tone === 'good' ? CheckCircle : TrendingUp, title: `Overall recovery health: ${tone === 'good' ? 'strong' : tone === 'warn' ? 'moderate' : 'weak'}`,
+        body: <>Recovery rate is <strong className={tone === 'good' ? 'text-emerald-700' : tone === 'warn' ? 'text-amber-700' : 'text-red-700'}>{stats.recoveryRate.toFixed(1)}%</strong> ({currency(stats.recoveredVal)} of {currency(stats.totalDeficitVal)}). {tone === 'good' ? 'Maintain current discipline.' : 'Push pending claims for closure.'}</>,
+        cta: null,
+      });
+    }
+    /* 5. Trend — last month vs prior */
+    if (stats.monthArr.length >= 2) {
+      const last = stats.monthArr[stats.monthArr.length - 1], prev = stats.monthArr[stats.monthArr.length - 2];
+      const delta = last.val - prev.val;
+      const deltaPct = prev.val > 0 ? (delta / prev.val * 100) : 0;
+      out.push({
+        kind: delta > 0 ? 'warn' : 'good', icon: delta > 0 ? ArrowUp : ArrowDown, title: `Month-on-month deficit ${delta > 0 ? 'rose' : 'dropped'}`,
+        body: <><strong>{last.month}</strong>: {currency(last.val)} vs <strong>{prev.month}</strong>: {currency(prev.val)} — <strong className={delta > 0 ? 'text-red-700' : 'text-emerald-700'}>{delta > 0 ? '+' : ''}{deltaPct.toFixed(1)}%</strong> change.</>,
+        cta: null,
+      });
+    }
+    /* 6. Most common SKU losing */
+    const topSKU = stats.bySKU[0];
+    if (topSKU && topSKU.count >= 3) {
+      out.push({
+        kind: 'warn', icon: Package, title: 'A single SKU keeps short-shipping',
+        body: <>SKU <strong className="font-mono">{topSKU.name}</strong> appears in <strong>{topSKU.count}</strong> deficit records totaling <strong>{currency(topSKU.deficitVal)}</strong> — check packaging / labelling QC.</>,
+        cta: null,
+      });
+    }
+    return out.slice(0, 6);
+  }, [stats, data]);
+
+  if (insights.length === 0) return null;
+  const toneCfg = {
+    critical: { bg: 'bg-red-50 border-red-200', icon: 'text-red-600', title: 'text-red-700' },
+    warn: { bg: 'bg-amber-50 border-amber-200', icon: 'text-amber-600', title: 'text-amber-700' },
+    good: { bg: 'bg-emerald-50 border-emerald-200', icon: 'text-emerald-600', title: 'text-emerald-700' },
+  };
+  return (
+    <div className="bg-gradient-to-br from-indigo-50 to-purple-50 border border-indigo-200 rounded-xl p-4">
+      <h3 className="text-[12px] font-bold text-indigo-800 flex items-center gap-2 mb-3"><Brain className="w-4 h-4" /> Smart Insights — Auto-detected from current filter</h3>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+        {insights.map((ins, i) => { const c = toneCfg[ins.kind]; const Icon = ins.icon; return (
+          <div key={i} className={`${c.bg} border rounded-lg p-2.5`}>
+            <div className="flex items-start gap-2">
+              <Icon className={`w-4 h-4 ${c.icon} flex-shrink-0 mt-0.5`} />
+              <div className="flex-1 min-w-0">
+                <p className={`text-[10px] font-bold ${c.title} uppercase tracking-wider`}>{ins.title}</p>
+                <p className="text-[11px] text-gray-700 mt-0.5 leading-snug">{ins.body}</p>
+                {ins.cta && <button onClick={ins.onCta} className={`text-[10px] mt-1 ${c.title} hover:underline font-semibold`}>{ins.cta} →</button>}
+              </div>
+            </div>
+          </div>
+        ); })}
+      </div>
+    </div>
+  );
+}
+
+/* ─── INSIGHTS & PREDICTIONS TAB ─────────────────────────────────────── */
+function InsightsTab({ data, stats, openDrill }) {
+  /* Time-to-recovery: for recovered claims, days from Claim Date to today (proxy for resolution time) */
+  const recoveryTimes = useMemo(() => {
+    return data
+      .filter(r => isRecovered(r['Claim Status'], r['Claim Final Status']))
+      .map(r => daysSince(r['Claim Date']))
+      .filter(d => d != null && d >= 0)
+      .sort((a, b) => a - b);
+  }, [data]);
+  const ttrAvg = recoveryTimes.length ? recoveryTimes.reduce((a, b) => a + b, 0) / recoveryTimes.length : 0;
+  const ttrP50 = recoveryTimes.length ? recoveryTimes[Math.floor(recoveryTimes.length / 2)] : 0;
+  const ttrP90 = recoveryTimes.length ? recoveryTimes[Math.floor(recoveryTimes.length * 0.9)] : 0;
+  const ttrMax = recoveryTimes.length ? recoveryTimes[recoveryTimes.length - 1] : 0;
+
+  /* Forecast next month using linear regression on monthly trend */
+  const forecast = useMemo(() => {
+    if (stats.monthArr.length < 2) return null;
+    const pts = stats.monthArr.map((m, i) => ({ x: i, y: m.val }));
+    const n = pts.length;
+    let sx = 0, sy = 0, sxy = 0, sxx = 0;
+    pts.forEach(p => { sx += p.x; sy += p.y; sxy += p.x * p.y; sxx += p.x * p.x; });
+    const slope = ((n * sxy - sx * sy) / (n * sxx - sx * sx)) || 0;
+    const intercept = (sy - slope * sx) / n;
+    const next = Math.max(0, slope * n + intercept);
+    const recPts = stats.monthArr.map((m, i) => ({ x: i, y: m.recoveredVal }));
+    let rsx = 0, rsy = 0, rsxy = 0, rsxx = 0;
+    recPts.forEach(p => { rsx += p.x; rsy += p.y; rsxy += p.x * p.y; rsxx += p.x * p.x; });
+    const rSlope = ((n * rsxy - rsx * rsy) / (n * rsxx - rsx * rsx)) || 0;
+    const rIntercept = (rsy - rSlope * rsx) / n;
+    const nextRec = Math.max(0, rSlope * n + rIntercept);
+    return { next, nextRec, slope, direction: slope > 0 ? 'rising' : slope < 0 ? 'falling' : 'stable' };
+  }, [stats]);
+
+  /* Critical claims — severity = age * (value / max) */
+  const criticalClaims = useMemo(() => {
+    const open = data.filter(r => isOpen(r['Claim Status']) && !isRecovered(r['Claim Status'], r['Claim Final Status']));
+    const maxVal = Math.max(...open.map(r => num(r['Deficit Value'])), 1);
+    return open.map(r => {
+      const age = daysSince(r['Claim Date']) || 0;
+      const val = num(r['Deficit Value']);
+      const severity = age * (val / maxVal);
+      return { ...r, _age: age, _val: val, _severity: severity };
+    }).sort((a, b) => b._severity - a._severity).slice(0, 15);
+  }, [data]);
+
+  /* What-if simulator state */
+  const [whatIfPct, setWhatIfPct] = useState(50);
+  const [whatIfDim, setWhatIfDim] = useState('open'); // open | aged60 | byCourier
+  const whatIfResult = useMemo(() => {
+    let pool = [];
+    if (whatIfDim === 'open') pool = data.filter(r => isOpen(r['Claim Status']) && !isRecovered(r['Claim Status'], r['Claim Final Status']));
+    else if (whatIfDim === 'aged60') pool = data.filter(r => {
+      if (isRecovered(r['Claim Status'], r['Claim Final Status'])) return false;
+      const a = daysSince(r['Claim Date']); return a != null && a > 60;
+    });
+    else if (whatIfDim === 'highValue') pool = data.filter(r => num(r['Deficit Value']) > 5000 && !isRecovered(r['Claim Status'], r['Claim Final Status']));
+    const poolVal = pool.reduce((s, r) => s + num(r['Deficit Value']), 0);
+    const additionalRec = poolVal * whatIfPct / 100;
+    const newTotalRec = stats.recoveredVal + additionalRec;
+    const newRate = stats.totalDeficitVal > 0 ? (newTotalRec / stats.totalDeficitVal * 100) : 0;
+    return { poolVal, additionalRec, newTotalRec, newRate, poolCount: pool.length };
+  }, [data, whatIfPct, whatIfDim, stats]);
+
+  /* Anomaly: courier or platform whose recovery rate is far below mean */
+  const anomalies = useMemo(() => {
+    const avgRec = stats.byCourier.reduce((s, c) => s + c.recoveryPct, 0) / Math.max(stats.byCourier.length, 1);
+    return stats.byCourier
+      .filter(c => c.deficitVal > 10000 && c.recoveryPct < avgRec * 0.5)
+      .slice(0, 5);
+  }, [stats]);
+
+  return (
+    <div className="space-y-3">
+      {/* Forecast card */}
+      {forecast && (
+        <div className="bg-gradient-to-br from-indigo-50 to-blue-50 border border-indigo-200 rounded-xl p-4">
+          <h3 className="text-[12px] font-bold text-indigo-800 flex items-center gap-2 mb-3"><Zap className="w-4 h-4" /> Next-Month Forecast</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="bg-white rounded-lg p-3 border border-indigo-100">
+              <p className="text-[9px] uppercase tracking-wider text-gray-500 font-semibold">Predicted deficit</p>
+              <p className="text-2xl font-bold text-rose-600">{currency(forecast.next)}</p>
+              <p className="text-[9px] text-gray-500">Linear trend, {forecast.direction}</p>
+            </div>
+            <div className="bg-white rounded-lg p-3 border border-indigo-100">
+              <p className="text-[9px] uppercase tracking-wider text-gray-500 font-semibold">Predicted recovered</p>
+              <p className="text-2xl font-bold text-emerald-600">{currency(forecast.nextRec)}</p>
+              <p className="text-[9px] text-gray-500">If current closure rate holds</p>
+            </div>
+            <div className="bg-white rounded-lg p-3 border border-indigo-100">
+              <p className="text-[9px] uppercase tracking-wider text-gray-500 font-semibold">Predicted loss</p>
+              <p className="text-2xl font-bold text-amber-600">{currency(Math.max(0, forecast.next - forecast.nextRec))}</p>
+              <p className="text-[9px] text-gray-500">Deficit − recovered</p>
+            </div>
+            <div className="bg-white rounded-lg p-3 border border-indigo-100">
+              <p className="text-[9px] uppercase tracking-wider text-gray-500 font-semibold">Trend signal</p>
+              <p className="text-2xl font-bold" style={{ color: forecast.slope > 0 ? '#dc2626' : forecast.slope < 0 ? '#059669' : '#6b7280' }}>{forecast.slope > 0 ? '▲' : forecast.slope < 0 ? '▼' : '─'}</p>
+              <p className="text-[9px] text-gray-500">{forecast.direction === 'rising' ? 'Deficit increasing' : forecast.direction === 'falling' ? 'Deficit improving' : 'Stable'}</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Time-to-recovery */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+        <h3 className="text-[12px] font-bold text-gray-800 flex items-center gap-2 mb-3"><Clock className="w-4 h-4 text-indigo-500" /> Recovery Speed — Time to Resolution</h3>
+        {recoveryTimes.length === 0 ? <p className="text-[11px] text-gray-400">No recovered claims yet to measure</p> : (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Stat2 label="Avg" value={`${ttrAvg.toFixed(0)} days`} sub={`across ${recoveryTimes.length} recoveries`} color="indigo" />
+            <Stat2 label="P50 (Median)" value={`${ttrP50} days`} sub="half close within" color="emerald" />
+            <Stat2 label="P90" value={`${ttrP90} days`} sub="90% close within" color="amber" />
+            <Stat2 label="Worst" value={`${ttrMax} days`} sub="longest recovery" color="red" />
+          </div>
+        )}
+      </div>
+
+      {/* Critical claims — severity ranking */}
+      <div className="bg-white rounded-xl shadow-sm border border-red-100 overflow-hidden">
+        <div className="px-4 py-3 border-b border-red-100 bg-red-50/30">
+          <h3 className="text-[12px] font-bold text-red-700 flex items-center gap-2"><Flame className="w-4 h-4" /> Critical Claims — Severity Ranking</h3>
+          <p className="text-[10px] text-gray-500 mt-0.5">Severity = Age × Value. Top 15 most urgent open claims.</p>
+        </div>
+        {criticalClaims.length === 0 ? <p className="text-[11px] text-gray-400 p-4">No open claims to rank</p> : (
+          <div className="overflow-x-auto"><table className="w-full text-[10px]">
+            <thead><tr className="bg-gray-50 border-b border-gray-100">
+              <th className="px-2 py-1.5 text-left font-semibold text-gray-500 w-6">#</th>
+              <th className="px-2 py-1.5 text-left font-semibold text-gray-500">AWB / Invoice</th>
+              <th className="px-2 py-1.5 text-left font-semibold text-gray-500">Platform</th>
+              <th className="px-2 py-1.5 text-left font-semibold text-gray-500">Courier</th>
+              <th className="px-2 py-1.5 text-left font-semibold text-gray-500">Holder</th>
+              <th className="px-2 py-1.5 text-right font-semibold text-rose-600">Deficit ₹</th>
+              <th className="px-2 py-1.5 text-right font-semibold text-amber-600">Age (d)</th>
+              <th className="px-2 py-1.5 text-right font-semibold text-red-600">Severity</th>
+            </tr></thead>
+            <tbody className="divide-y divide-gray-50">
+              {criticalClaims.map((c, i) => (
+                <tr key={i} className="hover:bg-red-50/40">
+                  <td className="px-2 py-1.5 font-bold text-red-500">{i + 1}</td>
+                  <td className="px-2 py-1.5 font-mono">{c['AWB Number']} / {c['Invoice Number']}</td>
+                  <td className="px-2 py-1.5">{c['Order Type']}</td>
+                  <td className="px-2 py-1.5 truncate max-w-[140px]" title={c['Carrier/Shipping Partner']}>{c['Carrier/Shipping Partner']}</td>
+                  <td className="px-2 py-1.5">{c['Claim Holder']}</td>
+                  <td className="px-2 py-1.5 text-right font-bold text-rose-600">{currency(c._val)}</td>
+                  <td className="px-2 py-1.5 text-right font-bold" style={{ color: c._age > 60 ? '#dc2626' : c._age > 30 ? '#ea580c' : '#d97706' }}>{c._age}</td>
+                  <td className="px-2 py-1.5 text-right font-bold text-red-700">{c._severity.toFixed(1)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+        )}
+      </div>
+
+      {/* What-if simulator */}
+      <div className="bg-white rounded-xl shadow-sm border border-indigo-100 p-4">
+        <h3 className="text-[12px] font-bold text-indigo-700 flex items-center gap-2 mb-3"><Calculator className="w-4 h-4" /> What-If Recovery Simulator</h3>
+        <p className="text-[10px] text-gray-500 mb-3">Estimate impact of recovering a % of a specific claim pool.</p>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+          <div>
+            <label className="block text-[10px] text-gray-600 mb-1 font-medium">Claim pool</label>
+            <select value={whatIfDim} onChange={e => setWhatIfDim(e.target.value)} className="w-full px-2 py-1.5 text-[11px] border border-gray-200 rounded">
+              <option value="open">All open claims</option>
+              <option value="aged60">Aged 60+ days only</option>
+              <option value="highValue">High-value (&gt; ₹5K) open</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-[10px] text-gray-600 mb-1 font-medium">Recovery target</label>
+            <div className="flex items-center gap-2">
+              <input type="range" min="0" max="100" step="5" value={whatIfPct} onChange={e => setWhatIfPct(parseInt(e.target.value))} className="flex-1" />
+              <span className="text-[11px] font-bold text-indigo-700 w-12 text-right">{whatIfPct}%</span>
+            </div>
+          </div>
+          <div>
+            <label className="block text-[10px] text-gray-600 mb-1 font-medium">Pool size</label>
+            <p className="text-[11px] py-1.5"><strong>{whatIfResult.poolCount}</strong> claims · <strong>{currency(whatIfResult.poolVal)}</strong> at stake</p>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+          <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-2.5">
+            <p className="text-[9px] uppercase text-emerald-600 font-semibold tracking-wider">If achieved:</p>
+            <p className="text-lg font-bold text-emerald-700">+{currency(whatIfResult.additionalRec)}</p>
+            <p className="text-[9px] text-gray-500">recovered (additional)</p>
+          </div>
+          <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-2.5">
+            <p className="text-[9px] uppercase text-indigo-600 font-semibold tracking-wider">New recovery total</p>
+            <p className="text-lg font-bold text-indigo-700">{currency(whatIfResult.newTotalRec)}</p>
+            <p className="text-[9px] text-gray-500">was {currency(stats.recoveredVal)}</p>
+          </div>
+          <div className="bg-purple-50 border border-purple-200 rounded-lg p-2.5">
+            <p className="text-[9px] uppercase text-purple-600 font-semibold tracking-wider">New recovery rate</p>
+            <p className="text-lg font-bold text-purple-700">{whatIfResult.newRate.toFixed(1)}%</p>
+            <p className="text-[9px] text-gray-500">from {stats.recoveryRate.toFixed(1)}%</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Anomaly couriers */}
+      {anomalies.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+          <h3 className="text-[12px] font-bold text-amber-800 flex items-center gap-2 mb-3"><AlertTriangle className="w-4 h-4" /> Anomalies — Couriers with Unusually Low Recovery</h3>
+          <p className="text-[10px] text-gray-600 mb-2">These couriers have significant deficit but recovery is &lt; 50% of the average rate.</p>
+          <div className="space-y-1">
+            {anomalies.map(a => (
+              <div key={a.name} className="flex items-center gap-2 bg-white rounded p-2 border border-amber-100">
+                <Flame className="w-3.5 h-3.5 text-amber-600 flex-shrink-0" />
+                <span className="flex-1 text-[11px] font-semibold text-gray-800">{a.name}</span>
+                <span className="text-[10px] text-gray-500">{a.count} records</span>
+                <span className="text-[11px] font-bold text-rose-700 w-24 text-right">{currency(a.deficitVal)}</span>
+                <span className="text-[10px] font-bold w-12 text-right" style={{ color: '#dc2626' }}>{a.recoveryPct.toFixed(0)}%</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Stat2({ label, value, sub, color = 'indigo' }) {
+  const map = { indigo: 'bg-indigo-50 text-indigo-700', emerald: 'bg-emerald-50 text-emerald-700', amber: 'bg-amber-50 text-amber-700', red: 'bg-red-50 text-red-700' };
+  return (
+    <div className={`${map[color]} rounded-lg p-3 border border-current/10`}>
+      <p className="text-[9px] uppercase tracking-wider text-gray-500 font-semibold">{label}</p>
+      <p className="text-2xl font-bold">{value}</p>
+      {sub && <p className="text-[9px] text-gray-500 mt-0.5">{sub}</p>}
+    </div>
+  );
+}
+
+/* ─── PIVOT BUILDER ──────────────────────────────────────────────────── */
+function PivotBuilder({ data, openDrill }) {
+  const DIMS = [
+    { k: 'Order Type', l: 'Platform' },
+    { k: 'Carrier/Shipping Partner', l: 'Courier' },
+    { k: 'WH', l: 'Warehouse' },
+    { k: 'Claim Status', l: 'Claim Status' },
+    { k: 'Claim Holder', l: 'Holder' },
+    { k: 'Claim Reason', l: 'Reason' },
+    { k: 'GRN Remarks', l: 'GRN Remarks' },
+    { k: 'CN/COF(Couier)', l: 'CN/COF' },
+    { k: 'SKU Code', l: 'SKU' },
+  ];
+  const METRICS = [
+    { k: 'count', l: 'Records' },
+    { k: 'deficitVal', l: 'Deficit ₹' },
+    { k: 'deficitUnits', l: 'Deficit Units' },
+    { k: 'recoveredVal', l: 'Recovered ₹' },
+    { k: 'recoveryPct', l: 'Recovery %' },
+  ];
+
+  const [rowDim, setRowDim] = useState('Order Type');
+  const [colDim, setColDim] = useState('Claim Status');
+  const [metric, setMetric] = useState('deficitVal');
+
+  const pivot = useMemo(() => {
+    const rows = new Set(), cols = new Set();
+    const cells = {};
+    data.forEach(r => {
+      const rk = (r[rowDim] || 'Unknown').toString();
+      const ck = (r[colDim] || 'Unknown').toString();
+      rows.add(rk); cols.add(ck);
+      const key = `${rk}||${ck}`;
+      if (!cells[key]) cells[key] = { count: 0, deficitVal: 0, deficitUnits: 0, recoveredVal: 0 };
+      cells[key].count++;
+      cells[key].deficitVal += num(r['Deficit Value']);
+      cells[key].deficitUnits += num(r['Deficit Unit']);
+      if (isRecovered(r['Claim Status'], r['Claim Final Status'])) cells[key].recoveredVal += num(r['Deficit Value']);
+    });
+    /* Compute recovery % */
+    Object.values(cells).forEach(c => { c.recoveryPct = c.deficitVal > 0 ? (c.recoveredVal / c.deficitVal * 100) : 0; });
+    /* Sort rows / cols by metric total */
+    const rowTotals = {}; const colTotals = {};
+    Object.entries(cells).forEach(([k, v]) => { const [rk, ck] = k.split('||'); rowTotals[rk] = (rowTotals[rk] || 0) + (v[metric] || 0); colTotals[ck] = (colTotals[ck] || 0) + (v[metric] || 0); });
+    const rowsArr = Array.from(rows).sort((a, b) => (rowTotals[b] || 0) - (rowTotals[a] || 0)).slice(0, 15);
+    const colsArr = Array.from(cols).sort((a, b) => (colTotals[b] || 0) - (colTotals[a] || 0)).slice(0, 10);
+    const max = Math.max(...Object.values(cells).map(c => c[metric] || 0), 1);
+    return { rows: rowsArr, cols: colsArr, cells, max, rowTotals, colTotals };
+  }, [data, rowDim, colDim, metric]);
+
+  const formatCell = (v) => {
+    if (v == null) return '—';
+    if (metric === 'count') return v.toLocaleString('en-IN');
+    if (metric === 'recoveryPct') return v.toFixed(0) + '%';
+    if (metric.includes('Val')) return currency(v);
+    return Math.round(v).toLocaleString('en-IN');
+  };
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <h3 className="text-[12px] font-bold text-gray-800 flex items-center gap-2"><Layers className="w-4 h-4 text-indigo-500" /> Pivot Builder</h3>
+        <p className="text-[10px] text-gray-500">Pick rows × cols × metric — click any cell to drill</p>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-3">
+        <div>
+          <label className="block text-[10px] text-gray-600 mb-1 font-medium">Rows</label>
+          <select value={rowDim} onChange={e => setRowDim(e.target.value)} className="w-full px-2 py-1.5 text-[11px] border border-indigo-200 rounded bg-indigo-50/30 text-indigo-700 font-semibold">
+            {DIMS.map(d => <option key={d.k} value={d.k}>{d.l}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-[10px] text-gray-600 mb-1 font-medium">Columns</label>
+          <select value={colDim} onChange={e => setColDim(e.target.value)} className="w-full px-2 py-1.5 text-[11px] border border-purple-200 rounded bg-purple-50/30 text-purple-700 font-semibold">
+            {DIMS.map(d => <option key={d.k} value={d.k}>{d.l}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-[10px] text-gray-600 mb-1 font-medium">Metric</label>
+          <select value={metric} onChange={e => setMetric(e.target.value)} className="w-full px-2 py-1.5 text-[11px] border border-rose-200 rounded bg-rose-50/30 text-rose-700 font-semibold">
+            {METRICS.map(m => <option key={m.k} value={m.k}>{m.l}</option>)}
+          </select>
+        </div>
+      </div>
+      <div className="overflow-x-auto"><table className="text-[9px] w-full">
+        <thead><tr>
+          <th className="px-2 py-1.5 text-left bg-gray-50 sticky left-0 z-10 font-semibold text-gray-600 min-w-[140px]">{DIMS.find(d => d.k === rowDim)?.l} ↓ / {DIMS.find(d => d.k === colDim)?.l} →</th>
+          {pivot.cols.map(c => <th key={c} className="px-2 py-1.5 text-right font-semibold text-gray-600 min-w-[80px]" title={c}>{c.length > 14 ? c.slice(0, 14) + '…' : c}</th>)}
+          <th className="px-2 py-1.5 text-right font-bold text-indigo-700 bg-indigo-50">Total</th>
+        </tr></thead>
+        <tbody>
+          {pivot.rows.map(r => (
+            <tr key={r} className="border-b border-gray-50">
+              <th className="px-2 py-1.5 text-left font-semibold text-gray-700 sticky left-0 bg-white z-10" title={r}>{r.length > 22 ? r.slice(0, 22) + '…' : r}</th>
+              {pivot.cols.map(c => {
+                const cell = pivot.cells[`${r}||${c}`];
+                const v = cell ? cell[metric] : null;
+                const intensity = pivot.max > 0 && v != null ? v / pivot.max : 0;
+                const bg = v != null ? `rgba(99, 102, 241, ${Math.min(0.05 + intensity * 0.7, 0.85)})` : 'transparent';
+                const txt = intensity > 0.5 ? '#fff' : '#374151';
+                return (
+                  <td key={c} className={`px-2 py-1.5 text-right font-mono ${cell ? 'cursor-pointer hover:ring-2 hover:ring-indigo-400' : ''}`}
+                    style={{ background: bg, color: txt }}
+                    onClick={() => cell && openDrill(`${r} × ${c}`, x => (x[rowDim] || 'Unknown').toString() === r && (x[colDim] || 'Unknown').toString() === c)}>
+                    {formatCell(v)}
+                  </td>
+                );
+              })}
+              <td className="px-2 py-1.5 text-right bg-indigo-50 font-bold text-indigo-700">{formatCell(pivot.rowTotals[r])}</td>
+            </tr>
+          ))}
+          <tr className="bg-indigo-100/50 border-t-2 border-indigo-200">
+            <th className="px-2 py-1.5 text-left font-bold text-indigo-800 sticky left-0 bg-indigo-100 z-10">Total</th>
+            {pivot.cols.map(c => <td key={c} className="px-2 py-1.5 text-right font-bold text-indigo-700">{formatCell(pivot.colTotals[c])}</td>)}
+            <td className="px-2 py-1.5 text-right font-bold text-indigo-800 bg-indigo-200">{formatCell(Object.values(pivot.rowTotals).reduce((s, v) => s + v, 0))}</td>
+          </tr>
+        </tbody>
+      </table></div>
+    </div>
   );
 }
 
