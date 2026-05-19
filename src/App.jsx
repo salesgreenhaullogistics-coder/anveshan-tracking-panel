@@ -23,12 +23,13 @@ import PlatformSOP from './pages/PlatformSOP';
 import Provision from './pages/Provision';
 import Analytics from './pages/Analytics';
 import AllLRs from './pages/AllLRs';
+import MorningCall from './pages/MorningCall';
 import { Loader2, Database } from 'lucide-react';
 
 const PAGE_MAP = {
   dashboard: Dashboard, 'all-lrs': AllLRs, intransit: InTransit, ofd: OFD,
   appointment: Appointment, 'aged-pos': AgedPOs, lost: LostShipments,
-  prepull: PrepullAged, 'aging-monitor': AgingMonitor, delivered: Delivered, return: ReturnModule,
+  prepull: PrepullAged, 'aging-monitor': AgingMonitor, 'morning-call': MorningCall, delivered: Delivered, return: ReturnModule,
   pods: PODs, grn: GRN, kpi: KPIMatrix, okr: OKR,
   cost: LogisticsCost, analytics: Analytics, poc: POCDetails, sop: PlatformSOP, provision: Provision,
 };
@@ -36,7 +37,7 @@ const PAGE_MAP = {
 const TAB_TITLES = {
   dashboard: 'Dashboard', 'all-lrs': 'All LRs', intransit: 'In-Transit', ofd: 'Out for Delivery',
   appointment: 'Appointment', 'aged-pos': "Aged PO's", lost: 'Lost Shipments',
-  prepull: 'Prepull Aged', 'aging-monitor': 'Aging Monitor', delivered: 'Delivered', return: 'Return',
+  prepull: 'Prepull Aged', 'aging-monitor': 'Aging Monitor', 'morning-call': 'Morning Logistics Call', delivered: 'Delivered', return: 'Return',
   pods: 'PODs', grn: 'GRN', kpi: 'KPI Matrix', okr: 'OKR',
   cost: 'Logistics Cost', analytics: 'Analytics', poc: 'POC Details', sop: 'Platform SOP', provision: 'Provision & Billing',
 };
