@@ -24,7 +24,7 @@ const NAV_GROUPS = [
     label: 'Documentation',
     items: [
       { key: 'pods', label: 'PODs', icon: FileText },
-      { key: 'grn', label: 'GRN', icon: ClipboardList },
+      { key: 'grn', label: 'GRN Deficit Controller', icon: ClipboardList },
     ],
   },
   {
