@@ -26,8 +26,133 @@ const VIEWS = [
   { key: 'executive', label: 'Executive Summary', icon: BarChart3 },
   { key: 'scorecard', label: 'KPI Scorecard', icon: Target },
   { key: 'tracking', label: 'Monthly Tracking', icon: Calendar },
+  { key: 'poa', label: 'Plan of Action', icon: Lightbulb },
   { key: 'rootcause', label: 'AI Root Cause', icon: Brain },
 ];
+
+/* ─── KPI-specific action plan generator (extracted for re-use across views) */
+function getActionPlanFor(k, ownerName) {
+  const gap = k.inv ? k.actual - k.target : k.target - k.actual;
+  const fmt2 = v => v != null && isFinite(v) ? (Number.isInteger(v) ? String(v) : v.toFixed(1)) : '-';
+  const plans = {
+    cost: [
+      { action: 'Negotiate courier rates with top 3 couriers', owner: 'Sandeep', timeline: '2 weeks', impact: `-${fmt2(gap * 0.3)}pp cost reduction` },
+      { action: 'Reduce RTO rate — implement address verification at order placement', owner: 'Prashant', timeline: '1 month', impact: 'Each 1% RTO reduction saves 2x shipping cost' },
+      { action: 'Optimize zone-wise courier allocation (cheapest for each lane)', owner: 'Sandeep', timeline: '1 week', impact: 'Route optimization can reduce cost by 5-8%' },
+      { action: 'Shift volume from high-cost to low-cost couriers', owner: 'Sandeep', timeline: '2 weeks', impact: 'Estimated saving: 3-5% on shifted volume' },
+      { action: 'Reduce failed delivery attempts (multiple attempts add cost)', owner: 'Nandlal', timeline: 'Ongoing', impact: 'Each re-attempt costs additional per shipment' },
+    ],
+    delivery: [
+      { action: 'Daily escalation of 8+ day aged shipments to courier ops', owner: 'Sandeep', timeline: 'Daily', impact: `+${fmt2(gap * 0.4)}pp delivery improvement` },
+      { action: 'Auto-book appointments for pending shipments', owner: 'Prashant', timeline: '1 week', impact: 'No appointment = no delivery' },
+      { action: 'Follow up with couriers on failed attempts within 24h', owner: 'Sandeep', timeline: 'Daily', impact: 'Reduce failure rate by 30-40%' },
+      { action: 'Improve first-attempt delivery success via better address quality', owner: 'Prashant', timeline: '2 weeks', impact: 'Higher FTDR reduces overall TAT' },
+    ],
+    pod: [
+      { action: 'Set 48-hour POD submission SLA with couriers', owner: 'Nandlal', timeline: '1 week', impact: `+${fmt2(gap * 0.5)}pp POD improvement` },
+      { action: 'Daily POD pending follow-up report to courier ops', owner: 'Nandlal', timeline: 'Daily', impact: 'Consistent follow-up improves compliance' },
+      { action: 'Penalize couriers for POD delay beyond 7 days', owner: 'Sandeep', timeline: '2 weeks', impact: 'Financial incentive for timely POD' },
+      { action: 'Implement digital POD capture at delivery point', owner: 'Anoop', timeline: '1 month', impact: 'Eliminates manual POD upload dependency' },
+    ],
+    transit: [
+      { action: 'Daily escalation of 8+ day aged shipments', owner: 'Sandeep', timeline: 'Daily', impact: 'Move shipments to 0-7 day bucket' },
+      { action: 'Root cause analysis for stuck shipments by courier', owner: 'Sandeep', timeline: '1 week', impact: 'Identify courier-specific bottlenecks' },
+      { action: 'Automated aging alerts to courier ops at 4 & 7 day marks', owner: 'Prashant', timeline: '2 weeks', impact: 'Proactive rather than reactive management' },
+      { action: 'Review and optimize last-mile delivery routes', owner: 'Sandeep', timeline: '1 month', impact: 'Route optimization reduces transit time' },
+    ],
+    rto: [
+      { action: 'Implement OTP verification before dispatch for risky orders', owner: 'Prashant', timeline: '2 weeks', impact: `-${fmt2(gap * 0.5)}pp RTO reduction` },
+      { action: 'Address quality check (zone-mismatch detection)', owner: 'Prashant', timeline: '1 week', impact: 'Catch bad addresses before dispatch' },
+      { action: 'Repeated RTO customer flagging (cash-on-delivery hold)', owner: 'Prashant', timeline: '2 weeks', impact: 'Reduce repeat RTO offenders' },
+      { action: 'Courier-wise RTO premium negotiation', owner: 'Sandeep', timeline: '1 month', impact: 'Recover RTO cost via courier penalty' },
+    ],
+    appt: [
+      { action: 'Enable auto-appointment booking system for B2B orders', owner: 'Prashant', timeline: '2 weeks', impact: 'Eliminates manual booking delays' },
+      { action: 'Daily monitoring of no-appointment shipments', owner: 'Prashant', timeline: 'Daily', impact: 'Early intervention on aging shipments' },
+      { action: 'Set SLA: appointment booked within 24h of reaching hub', owner: 'Prashant', timeline: '1 week', impact: 'Reduces appointment-pending aging' },
+    ],
+    grn: [
+      { action: 'Coordinate with warehouse for daily GRN closure target', owner: 'Nandlal', timeline: 'Daily', impact: 'Faster invoice settlement cycle' },
+      { action: 'Identify top 3 platforms with GRN delays and escalate', owner: 'Nandlal', timeline: '1 week', impact: 'Recover stuck receivables' },
+      { action: 'Automate GRN reconciliation report from platform portals', owner: 'Nandlal', timeline: '1 month', impact: 'Reduce manual reconciliation effort by 50%' },
+    ],
+    dispatch: [
+      { action: 'Improve picking accuracy at warehouse to reduce dispatch delays', owner: 'Anoop', timeline: '2 weeks', impact: 'Higher same-day dispatch rate' },
+      { action: 'Pull cutoff time earlier to allow same-day dispatch buffer', owner: 'Anoop', timeline: '1 week', impact: 'Better SLA compliance' },
+      { action: 'Increase pickup compliance via courier-wise pickup tracker', owner: 'Anoop', timeline: '1 week', impact: 'Reduce missed pickups by 80%' },
+    ],
+    quality: [
+      { action: 'Implement quality SOP at packaging station', owner: 'Anoop', timeline: '2 weeks', impact: 'Reduce damage-in-transit complaints' },
+      { action: 'Random quality audits — 5% of daily dispatch', owner: 'Anoop', timeline: 'Ongoing', impact: 'Catch issues before reaching customer' },
+      { action: 'Label-verification at sealing stage (2-person check)', owner: 'Anoop', timeline: '1 week', impact: 'Eliminate label mismatch errors' },
+    ],
+    doc: [
+      { action: 'Daily document compliance check (e-way bill, invoice, tax)', owner: 'Nandlal', timeline: 'Daily', impact: 'Reduce regulatory issues' },
+      { action: 'Train warehouse staff on doc requirements per platform', owner: 'Nandlal', timeline: '2 weeks', impact: 'Fewer rejections at hub' },
+    ],
+    capacity: [
+      { action: 'Capacity utilization tracking on real-time dashboard', owner: 'Anoop', timeline: '2 weeks', impact: 'Identify bottleneck zones' },
+      { action: 'Cross-zone load balancing during peak hours', owner: 'Anoop', timeline: '1 month', impact: 'Avoid local overload' },
+    ],
+    platform: [
+      { action: `Review SLA compliance with top platform partners`, owner: 'Prashant', timeline: '1 week', impact: `+${fmt2(gap * 0.4)}pp OTIF improvement` },
+      { action: `Optimize platform-zone-courier mapping`, owner: 'Sandeep', timeline: '2 weeks', impact: 'Better courier-zone fit improves OTIF' },
+      { action: 'Escalate aged shipments to priority queue (per platform)', owner: 'Prashant', timeline: 'Daily', impact: 'Reduces aging backlog' },
+      { action: 'Analyze top 3 failure reasons per platform and address', owner: 'Prashant', timeline: '1 week', impact: 'Targeted fix for highest-impact issues' },
+    ],
+  };
+  /* Map KPI name to plan key */
+  const kn = (k.name || '').toLowerCase();
+  let key = null;
+  if (kn.includes('cost')) key = 'cost';
+  else if (kn.includes('pod')) key = 'pod';
+  else if (kn.includes('rto') && (kn.includes('aging') || kn.includes('ageing'))) key = 'transit';
+  else if (kn.includes('rto')) key = 'rto';
+  else if (kn.includes('transit')) key = 'transit';
+  else if (kn.includes('appt') || kn.includes('appointment')) key = 'appt';
+  else if (kn.includes('otif') || kn.includes('channel del') || kn.includes('platform')) key = 'platform';
+  else if (kn.includes('delivery success') || kn.includes('first attempt')) key = 'delivery';
+  else if (kn.includes('grn')) key = 'grn';
+  else if (kn.includes('dispatch') || kn.includes('pickup')) key = 'dispatch';
+  else if (kn.includes('quality') || kn.includes('packaging') || kn.includes('label')) key = 'quality';
+  else if (kn.includes('doc')) key = 'doc';
+  else if (kn.includes('capacity') || kn.includes('wh')) key = 'capacity';
+
+  if (key && plans[key]) return plans[key];
+
+  return [
+    { action: `Analyze root cause of ${k.name} underperformance`, owner: ownerName || '-', timeline: '1 week', impact: 'Identify top contributing factors' },
+    { action: 'Set daily monitoring dashboard for this KPI', owner: ownerName || '-', timeline: '3 days', impact: 'Early detection of deviations' },
+    { action: 'Create weekly improvement review cadence', owner: ownerName || '-', timeline: 'Weekly', impact: `Track progress toward ${fmt2(k.target)}${k.unit || '%'} target` },
+    { action: 'Benchmark against best performing month and replicate', owner: ownerName || '-', timeline: '2 weeks', impact: 'Apply proven practices' },
+  ];
+}
+
+/* ─── Simple inline SVG sparkline ────────────────────────────────────── */
+function Sparkline({ values, width = 80, height = 22, color = '#6366F1', target = null, invert = false }) {
+  const clean = (values || []).filter(v => v != null && isFinite(v));
+  if (clean.length < 2) return <span className="text-[9px] text-gray-300">—</span>;
+  const min = Math.min(...clean, target != null ? target : Infinity);
+  const max = Math.max(...clean, target != null ? target : -Infinity);
+  const range = (max - min) || 1;
+  const stepX = clean.length > 1 ? width / (clean.length - 1) : 0;
+  const pts = clean.map((v, i) => `${(i * stepX).toFixed(1)},${(height - ((v - min) / range) * (height - 4) - 2).toFixed(1)}`).join(' ');
+  const last = clean[clean.length - 1];
+  const first = clean[0];
+  const delta = last - first;
+  const trendUp = invert ? delta < 0 : delta > 0;
+  const trendColor = trendUp ? '#10b981' : delta === 0 ? '#9ca3af' : '#ef4444';
+  return (
+    <svg width={width} height={height} className="inline-block align-middle">
+      {target != null && (
+        <line x1={0} y1={height - ((target - min) / range) * (height - 4) - 2} x2={width} y2={height - ((target - min) / range) * (height - 4) - 2}
+          stroke="#cbd5e1" strokeWidth={0.5} strokeDasharray="2,2" />
+      )}
+      <polyline fill="none" stroke={color} strokeWidth={1.5} points={pts} />
+      <circle cx={(clean.length - 1) * stepX} cy={height - ((last - min) / range) * (height - 4) - 2} r={2} fill={trendColor} />
+    </svg>
+  );
+}
 
 const MONTHS_LIST = ["Mar'26","Apr'26","May'26","Jun'26","Jul'26","Aug'26"];
 const PERIODS = ['Monthly','Quarterly','Yearly'];
@@ -145,6 +270,11 @@ export default function OKR() {
   const [lockedMonths, setLockedMonths] = useState(() => { try { return JSON.parse(localStorage.getItem('okr-lock') || '{}'); } catch { return {}; } });
   const [expTrackMonth, setExpTrackMonth] = useState(null);
   const [trackDrill, setTrackDrill] = useState(null);
+  /* Plan of Action — status + notes per (owner||month||kpi||index). Persisted to localStorage. */
+  const [poaState, setPoaState] = useState(() => { try { return JSON.parse(localStorage.getItem('okr-poa') || '{}'); } catch { return {}; } });
+  const [poaMonth, setPoaMonth] = useState("Mar'26");
+  const [poaFilter, setPoaFilter] = useState('all'); // all | open | done | mine
+  const updatePoa = (key, patch) => setPoaState(p => { const n = { ...p, [key]: { ...(p[key] || {}), ...patch } }; localStorage.setItem('okr-poa', JSON.stringify(n)); return n; });
 
   const now = new Date();
   const cur = KPI_OWNERS.find(o => o.key === owner);
@@ -231,8 +361,6 @@ export default function OKR() {
             { label: 'Big Basket', value: a.platDel['Big Basket'], target: 80, good: true },
           ]},
         { name: 'Delivery Success %', w: 10, actual: a.delPct, target: 96, base: 90, high: 98, exc: 99, unit: '%' },
-        { name: 'Non-Appt 0-2 Days %', w: 3, actual: a.noApptPcts['0-2'], target: 90, base: 84, high: 95, exc: 100, unit: '%' },
-        { name: 'POD Visibility', w: 5, actual: a.podPct, target: 90, base: 80, high: 96, exc: 100, unit: '%' },
       ],
       prashant: [
         { name: 'Channel Delivery', w: 15, actual: Math.round(((a.platDel['Blinkit']||0)+(a.platDel['Swiggy']||0)+(a.platDel['Amazon']||0))/3*10)/10, target: 95, base: 90, high: 97, exc: 99, unit: '%',
@@ -268,10 +396,12 @@ export default function OKR() {
             { label: 'No Appt (11-15d)', value: a.noApptPcts['11-15'], target: 0, good: false },
             { label: 'No Appt (15+d)', value: a.noApptPcts['15+'], target: 0, good: false },
           ]},
+        { name: 'Non-Appt 0-2 Days %', w: 3, actual: a.noApptPcts['0-2'], target: 90, base: 84, high: 95, exc: 100, unit: '%' },
         { name: 'Doc Issues %', w: 5, actual: 98, target: 98.5, base: 98, high: 99, exc: 100, unit: '%' },
       ],
       nandlal: [
         { name: 'GRN Recovery %', w: 35, actual: 90, target: 93, base: 90, high: 97, exc: 100, unit: '%' },
+        { name: 'POD Visibility', w: 5, actual: a.podPct, target: 90, base: 80, high: 96, exc: 100, unit: '%' },
         { name: 'POD Ageing', w: 15, actual: a.podPct > 80 ? 80 : a.podPct, target: 90, base: 80, high: 96, exc: 100, unit: '%',
           sub: [
             { label: '0-7 Days', value: a.podPct > 80 ? 80 : a.podPct, target: 90, good: true },
@@ -444,6 +574,54 @@ export default function OKR() {
           <KPICard title="Forecast" value={forecast ? `${forecast.nextMonth}%` : '-'} icon={TrendingUp} color={forecast?.risk === 'LOW' ? 'green' : 'red'} subtitle={forecast ? `${forecast.risk} Risk` : ''} />
         </div>
 
+        {/* All Owners Snapshot — best/worst KPI per owner, total at-risk, weighted score progress */}
+        {owner === 'all' && (
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+            <h3 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2"><Building2 className="w-4 h-4 text-indigo-500" /> Owner Snapshot — Best & Worst KPI per Owner</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+              {['sandeep','prashant','nandlal','anoop'].map(oKey => {
+                const oKpis = kpis.filter(k => k._owner === oKey);
+                const oInfo = KPI_OWNERS.find(o => o.key === oKey);
+                const oScore = allOwnerScores.find(s => s.key === oKey);
+                /* Score each KPI for ranking */
+                const ranked = oKpis.map(k => ({ k, s: scorePct(k.actual, k.target, k.base, k.exc, k.inv), gap: k.inv ? k.actual - k.target : k.target - k.actual })).sort((a, b) => b.s - a.s);
+                const best = ranked[0];
+                const worst = ranked[ranked.length - 1];
+                return (
+                  <button key={oKey} onClick={() => setOwner(oKey)} className="text-left rounded-xl border border-gray-200 p-3 hover:border-indigo-300 hover:shadow-md transition-all bg-gradient-to-br from-white to-indigo-50/30">
+                    <div className="flex items-center justify-between mb-2">
+                      <div>
+                        <p className="text-[11px] font-bold text-indigo-700">{oInfo?.name}</p>
+                        <p className="text-[9px] text-gray-400">{oInfo?.role}</p>
+                      </div>
+                      {oScore && <div className="text-right"><p className="text-lg font-bold text-indigo-700">{oScore.score}</p><span className={`text-[9px] font-bold px-1 rounded border ${oScore.grade.color}`}>{oScore.grade.label}</span></div>}
+                    </div>
+                    {best && (
+                      <div className="bg-emerald-50/50 border border-emerald-100 rounded-lg p-1.5 mb-1.5">
+                        <p className="text-[8px] uppercase tracking-wider text-emerald-600 font-semibold">Best KPI</p>
+                        <p className="text-[10px] font-semibold text-gray-800 truncate">{best.k.name}</p>
+                        <p className="text-[10px] text-emerald-700 font-bold">{fmt(best.k.actual)}{best.k.unit} <span className="text-gray-400 font-normal">/ {fmt(best.k.target)}{best.k.unit}</span></p>
+                      </div>
+                    )}
+                    {worst && worst.gap > 0 && (
+                      <div className="bg-red-50/50 border border-red-100 rounded-lg p-1.5">
+                        <p className="text-[8px] uppercase tracking-wider text-red-600 font-semibold">Worst KPI</p>
+                        <p className="text-[10px] font-semibold text-gray-800 truncate">{worst.k.name}</p>
+                        <p className="text-[10px] text-red-700 font-bold">{fmt(worst.k.actual)}{worst.k.unit} <span className="text-red-500 font-normal">({worst.k.inv ? '+' : '-'}{fmt(worst.gap)}{worst.k.unit} gap)</span></p>
+                      </div>
+                    )}
+                    {worst && worst.gap <= 0 && (
+                      <div className="bg-emerald-50/50 border border-emerald-100 rounded-lg p-1.5">
+                        <p className="text-[10px] text-emerald-700 font-bold flex items-center gap-1"><CheckCircle className="w-3 h-3" /> All KPIs on target</p>
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* KPI Health Grid */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
           <h3 className="text-sm font-semibold text-gray-700 mb-3">KPI Health Overview</h3>
@@ -526,67 +704,7 @@ export default function OKR() {
             if (!k) return null;
             const gap = k.inv ? k.actual - k.target : k.target - k.actual;
             if (gap <= 0) return <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4"><p className="text-[11px] text-emerald-700 font-semibold flex items-center gap-2"><CheckCircle className="w-4 h-4" /> {k.name} is on target. No action required.</p></div>;
-
-            /* KPI-specific action plans */
-            const plans = {
-              'Overall Cost %': [
-                { action: 'Negotiate courier rates with top 3 couriers', owner: 'Sandeep', timeline: '2 weeks', impact: `-${fmt(gap * 0.3)}pp cost reduction` },
-                { action: 'Reduce RTO rate — implement address verification', owner: 'Nandlal', timeline: '1 month', impact: 'Each 1% RTO reduction saves 2x shipping' },
-                { action: 'Optimize zone-wise courier allocation', owner: 'Sandeep', timeline: '1 week', impact: 'Route optimization can reduce cost by 5-8%' },
-                { action: 'Shift volume from high-cost to low-cost couriers', owner: 'Sandeep', timeline: '2 weeks', impact: 'Estimated saving: 3-5% on shifted volume' },
-                { action: 'Reduce failed delivery attempts (multiple attempts add cost)', owner: 'Nandlal', timeline: 'Ongoing', impact: 'Each re-attempt costs additional per shipment' },
-              ],
-              'Delivery Success %': [
-                { action: 'Escalate 8+ day aged shipments daily', owner: 'Sandeep', timeline: 'Daily', impact: `+${fmt(gap * 0.4)}pp delivery improvement` },
-                { action: 'Auto-book appointments for pending shipments', owner: 'Nandlal', timeline: '1 week', impact: 'No appointment = no delivery' },
-                { action: 'Follow up with couriers on failed attempts', owner: 'Sandeep', timeline: 'Daily', impact: 'Reduce failure rate by 30-40%' },
-                { action: 'Improve first-attempt delivery success', owner: 'Nandlal', timeline: '2 weeks', impact: 'Higher FTDR reduces overall TAT' },
-              ],
-              'POD Visibility': [
-                { action: 'Set 48-hour POD submission SLA with couriers', owner: 'Prashant', timeline: '1 week', impact: `+${fmt(gap * 0.5)}pp POD improvement` },
-                { action: 'Daily POD pending follow-up report to courier ops', owner: 'Prashant', timeline: 'Daily', impact: 'Consistent follow-up improves compliance' },
-                { action: 'Penalize couriers for POD delay beyond 7 days', owner: 'Sandeep', timeline: '2 weeks', impact: 'Financial incentive for timely POD' },
-                { action: 'Implement digital POD capture at delivery point', owner: 'Anoop', timeline: '1 month', impact: 'Eliminates manual POD upload dependency' },
-              ],
-            };
-            /* Generic plan for KPIs without specific plan */
-            const defaultPlan = [
-              { action: `Analyze root cause of ${k.name} underperformance`, owner: cur?.name || '-', timeline: '1 week', impact: 'Identify top contributing factors' },
-              { action: 'Set daily monitoring dashboard for this KPI', owner: cur?.name || '-', timeline: '3 days', impact: 'Early detection of deviations' },
-              { action: 'Create weekly improvement review cadence', owner: cur?.name || '-', timeline: 'Weekly', impact: `Track progress toward ${fmt(k.target)}${k.unit} target` },
-              { action: 'Benchmark against best performing month and replicate', owner: cur?.name || '-', timeline: '2 weeks', impact: 'Apply proven practices' },
-            ];
-            /* Match plan — check partial name matches */
-            let actionPlan = defaultPlan;
-            for (const [key, plan] of Object.entries(plans)) {
-              if (k.name.toLowerCase().includes(key.toLowerCase().split(' ')[0])) { actionPlan = plan; break; }
-            }
-            /* Platform-specific plans */
-            if (k.name.includes('OTIF') || k.name.includes('Channel Del')) {
-              const pl = k.name.split('—')[1]?.trim() || k.name;
-              actionPlan = [
-                { action: `Review ${pl} SLA compliance with courier partners`, owner: 'Nandlal', timeline: '1 week', impact: `+${fmt(gap * 0.4)}pp ${pl} delivery improvement` },
-                { action: `Optimize ${pl} zone-wise courier mapping`, owner: 'Sandeep', timeline: '2 weeks', impact: 'Better courier-zone fit improves OTIF' },
-                { action: `Escalate ${pl} aged shipments to priority queue`, owner: 'Nandlal', timeline: 'Daily', impact: 'Reduces aging backlog' },
-                { action: `Analyze ${pl} failure reasons and address top 3`, owner: 'Nandlal', timeline: '1 week', impact: 'Targeted fix for highest-impact issues' },
-              ];
-            }
-            if (k.name.includes('Non-Appt') || k.name.includes('Appt')) {
-              actionPlan = [
-                { action: 'Enable auto-appointment booking system', owner: 'Nandlal', timeline: '2 weeks', impact: 'Eliminates manual booking delays' },
-                { action: 'Daily monitoring of no-appointment shipments', owner: 'Sandeep', timeline: 'Daily', impact: 'Early intervention on aging shipments' },
-                { action: 'Set appointment booking SLA: within 24 hours of reaching hub', owner: 'Nandlal', timeline: '1 week', impact: 'Reduces appointment pending aging' },
-              ];
-            }
-            if (k.name.includes('transit')) {
-              actionPlan = [
-                { action: 'Daily escalation of 8+ day aged shipments', owner: 'Sandeep', timeline: 'Daily', impact: `Move shipments to 0-7 day bucket` },
-                { action: 'Root cause analysis for stuck shipments by courier', owner: 'Sandeep', timeline: '1 week', impact: 'Identify courier-specific bottlenecks' },
-                { action: 'Implement automated aging alerts to courier ops', owner: 'Nandlal', timeline: '2 weeks', impact: 'Proactive rather than reactive management' },
-                { action: 'Review and optimize last-mile delivery routes', owner: 'Sandeep', timeline: '1 month', impact: 'Route optimization reduces transit time' },
-              ];
-            }
-
+            const actionPlan = getActionPlanFor(k, cur?.name);
             return (
               <div className="bg-white rounded-xl shadow-sm border border-indigo-200 p-4">
                 <div className="flex items-center justify-between mb-3">
@@ -594,7 +712,10 @@ export default function OKR() {
                     <h3 className="text-sm font-bold text-indigo-800 flex items-center gap-2"><Lightbulb className="w-4 h-4" /> Plan of Action — {k.name}</h3>
                     <p className="text-[10px] text-gray-500 mt-0.5">Current: <span className="text-red-600 font-semibold">{fmt(k.actual)}{k.unit}</span> → Target: <span className="text-blue-600 font-semibold">{fmt(k.target)}{k.unit}</span> → Gap: <span className="text-red-500 font-bold">{k.inv ? '+' : '-'}{fmt(gap)}{k.unit}</span></p>
                   </div>
-                  <button onClick={() => setExpKPI(null)} className="p-1 hover:bg-gray-100 rounded-lg text-gray-400"><X className="w-4 h-4" /></button>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => setView('poa')} className="text-[10px] px-2 py-1 rounded bg-indigo-100 text-indigo-700 hover:bg-indigo-200 font-semibold">Open full PoA →</button>
+                    <button onClick={() => setExpKPI(null)} className="p-1 hover:bg-gray-100 rounded-lg text-gray-400"><X className="w-4 h-4" /></button>
+                  </div>
                 </div>
                 <div className="overflow-x-auto"><table className="w-full text-[11px]">
                   <thead><tr className="bg-indigo-50 border-b border-indigo-200">
@@ -620,7 +741,6 @@ export default function OKR() {
             );
           })()}
         </div>
-
         {/* Trend */}
         {actuals.monthTrend.length > 0 && (
           <div className="chart-container"><LineChart title={`${cur?.name} — Monthly Trend`} labels={actuals.monthTrend.map(m => m.month)} datasets={[{ label: 'Delivery %', data: actuals.monthTrend.map(m => parseFloat(m.delPct.toFixed(1))), color: '#10B981', fill: true }, { label: 'RTO %', data: actuals.monthTrend.map(m => parseFloat(m.rtoPct.toFixed(1))), color: '#EF4444' }]} height={200} /></div>
@@ -629,6 +749,93 @@ export default function OKR() {
 
       {/* ═══ KPI SCORECARD ═══ */}
       {view === 'scorecard' && (<div className="space-y-4">
+        {/* Quick-health strip — count of KPIs in each grade bucket */}
+        {(() => {
+          const gradeBuckets = { Exceptional: 0, High: 0, Target: 0, Base: 0, Below: 0 };
+          kpis.forEach(k => {
+            const g = getGrade(scorePct(k.actual, k.target, k.base, k.exc, k.inv));
+            gradeBuckets[g.label]++;
+          });
+          const bucketColors = { Exceptional: 'bg-emerald-500', High: 'bg-blue-500', Target: 'bg-amber-500', Base: 'bg-orange-500', Below: 'bg-red-500' };
+          return (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-700">Scorecard Health Distribution</h3>
+                  <p className="text-[10px] text-gray-400">{kpis.length} KPI{kpis.length === 1 ? '' : 's'} grouped by performance grade</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-2xl font-bold text-indigo-700">{overallScore}<span className="text-sm text-gray-400">/100</span></p>
+                  <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${grade.color}`}>{grade.label}</span>
+                </div>
+              </div>
+              <div className="grid grid-cols-5 gap-2">
+                {Object.entries(gradeBuckets).map(([lbl, ct]) => {
+                  const pct = kpis.length > 0 ? (ct / kpis.length * 100) : 0;
+                  return (
+                    <div key={lbl} className="bg-gray-50 rounded-lg p-2">
+                      <div className="flex items-center gap-1.5 mb-1"><span className={`w-2 h-2 rounded-full ${bucketColors[lbl]}`} /><p className="text-[9px] uppercase tracking-wider text-gray-500 font-semibold">{lbl}</p></div>
+                      <p className="text-lg font-bold text-gray-800">{ct}</p>
+                      <div className="w-full h-1 bg-white rounded-full mt-1 overflow-hidden"><div className={`h-full ${bucketColors[lbl]} rounded-full`} style={{ width: `${pct}%` }} /></div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Biggest Movers — improvers vs decliners (based on monthTrend) */}
+        {actuals.monthTrend.length >= 2 && (() => {
+          const mt = actuals.monthTrend;
+          const last = mt[mt.length - 1], prev = mt[mt.length - 2];
+          const movers = [
+            { label: 'Delivery %', cur: last.delPct, prev: prev.delPct, good: true },
+            { label: 'RTO %', cur: last.rtoPct, prev: prev.rtoPct, good: false },
+          ].map(m => ({ ...m, delta: m.cur - m.prev, trend: (m.good ? m.cur - m.prev : m.prev - m.cur) }));
+          return (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+              <h3 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2"><TrendingUp className="w-4 h-4 text-indigo-500" /> Month-on-Month Movers ({prev.month} → {last.month})</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {movers.map(m => (
+                  <div key={m.label} className={`rounded-xl p-3 border ${m.trend > 0 ? 'bg-emerald-50/50 border-emerald-200' : m.trend < 0 ? 'bg-red-50/50 border-red-200' : 'bg-gray-50 border-gray-200'}`}>
+                    <div className="flex items-center justify-between">
+                      <p className="text-[11px] font-semibold text-gray-800">{m.label}</p>
+                      <span className={`text-[10px] font-bold ${m.trend > 0 ? 'text-emerald-600' : m.trend < 0 ? 'text-red-600' : 'text-gray-500'}`}>{m.trend > 0 ? '▲' : m.trend < 0 ? '▼' : '─'} {fmt(Math.abs(m.delta))}pp</span>
+                    </div>
+                    <div className="flex items-baseline gap-2 mt-1">
+                      <p className="text-2xl font-bold text-gray-800">{fmt(m.cur)}%</p>
+                      <p className="text-[10px] text-gray-400">vs {fmt(m.prev)}% prev</p>
+                    </div>
+                    <Sparkline values={mt.map(x => m.label === 'Delivery %' ? x.delPct : x.rtoPct)} width={180} height={28} color={m.good ? '#10b981' : '#ef4444'} invert={!m.good} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Per-owner score comparison (All Owners view only) */}
+        {owner === 'all' && allOwnerScores.length > 0 && (
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+            <h3 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2"><BarChart3 className="w-4 h-4 text-indigo-500" /> Owner Score Comparison</h3>
+            <div className="space-y-2">
+              {[...allOwnerScores].sort((a, b) => b.score - a.score).map(os => (
+                <div key={os.key} className="flex items-center gap-3">
+                  <button onClick={() => setOwner(os.key)} className="w-24 text-left text-[11px] font-semibold text-indigo-700 hover:underline">{os.name}</button>
+                  <div className="flex-1 h-5 bg-gray-100 rounded-full overflow-hidden relative">
+                    <div className={`h-full ${os.grade.bar} rounded-full flex items-center justify-end pr-2 transition-all`} style={{ width: `${Math.min(100, os.score)}%` }}>
+                      <span className="text-[10px] font-bold text-white">{os.score}</span>
+                    </div>
+                  </div>
+                  <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border w-20 text-center ${os.grade.color}`}>{os.grade.label}</span>
+                  {os.atRisk > 0 && <span className="text-[9px] text-red-500 font-semibold w-16">{os.atRisk} at risk</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-100"><h3 className="text-sm font-semibold text-gray-700">KPI Performance Matrix</h3></div>
           <div className="overflow-x-auto"><table className="w-full text-[11px]">
@@ -800,9 +1007,41 @@ autoActuals[m]['Non-Appointment %'] = total > 0 ? parseFloat(percent(intransit.f
               {trackCols.map(m => { const locked = lockedMonths[`${owner}||${m}`]; return (
                 <th key={m} className="px-1 py-2 text-center font-semibold text-gray-500 min-w-[80px]"><div>{m}</div><button onClick={() => toggleLock(m)} className={`mt-0.5 p-0.5 rounded ${locked ? 'text-emerald-500' : 'text-gray-300 hover:text-gray-500'}`}>{locked ? <Lock className="w-3 h-3" /> : <Unlock className="w-3 h-3" />}</button></th>
               ); })}
+              {period === 'Monthly' && <>
+                <th className="px-2 py-2 text-center font-semibold text-indigo-600 w-20">Trend</th>
+                <th className="px-2 py-2 text-center font-semibold text-purple-600 w-16">Forecast</th>
+                <th className="px-2 py-2 text-center font-semibold text-gray-600 w-14">Gap</th>
+              </>}
             </tr></thead>
             <tbody className="divide-y divide-gray-50">
-              {kpis.map((k, ki) => (
+              {kpis.map((k, ki) => {
+                /* Build series of (manual||auto) values across MONTHS_LIST for sparkline + forecast */
+                const series = MONTHS_LIST.map(m => {
+                  const tO = owner === 'all' ? k._owner : owner;
+                  const mv = trackingData[`${tO}||${m}||${k.name}`];
+                  const av = autoActuals[m]?.[k.name];
+                  const v = mv != null && mv !== '' ? parseFloat(mv) : (av != null ? av : null);
+                  return v != null && isFinite(v) ? v : null;
+                });
+                /* Simple linear-regression forecast for next month from non-null series */
+                let forecastVal = null;
+                const pts = series.map((v, i) => ({ x: i, y: v })).filter(p => p.y != null);
+                if (pts.length >= 2) {
+                  const n = pts.length;
+                  let sx = 0, sy = 0, sxy = 0, sxx = 0;
+                  pts.forEach(p => { sx += p.x; sy += p.y; sxy += p.x * p.y; sxx += p.x * p.x; });
+                  const slope = ((n * sxy - sx * sy) / (n * sxx - sx * sx)) || 0;
+                  const intercept = (sy - slope * sx) / n;
+                  /* Forecast for next non-null slot */
+                  const lastIdx = pts[pts.length - 1].x;
+                  forecastVal = Math.max(0, Math.min(150, slope * (lastIdx + 1) + intercept));
+                }
+                /* Latest actual & gap */
+                const latest = pts.length > 0 ? pts[pts.length - 1].y : null;
+                const gap = latest != null ? (k.inv ? latest - k.target : k.target - latest) : null;
+                const gapColor = gap == null ? '#9ca3af' : gap <= 0 ? '#059669' : '#dc2626';
+                const forecastMet = forecastVal != null ? (k.inv ? forecastVal <= k.target : forecastVal >= k.target) : null;
+                return (
                 <tr key={ki} className="hover:bg-gray-50/50">
                   {owner === 'all' && <td className="px-2 py-1.5 text-[9px] font-medium text-indigo-600 border-r border-gray-100">{k._ownerName}</td>}
                   <td className={`px-3 py-1.5 font-medium text-gray-700 ${owner === 'all' ? '' : 'sticky left-0 bg-white z-10'} border-r border-gray-100 text-[10px]`}>{k.name}</td>
@@ -836,8 +1075,14 @@ autoActuals[m]['Non-Appointment %'] = total > 0 ? parseFloat(percent(intransit.f
                     </td>
                     );
                   })}
+                  {period === 'Monthly' && <>
+                    <td className="px-2 py-1.5 text-center bg-indigo-50/20"><Sparkline values={series} target={k.target} invert={k.inv} color="#6366f1" /></td>
+                    <td className={`px-2 py-1.5 text-center text-[10px] font-bold ${forecastMet === true ? 'text-emerald-600 bg-emerald-50/30' : forecastMet === false ? 'text-red-600 bg-red-50/30' : 'text-gray-400'}`}>{forecastVal != null ? fmt(forecastVal) + k.unit : '-'}</td>
+                    <td className="px-2 py-1.5 text-center text-[10px] font-bold" style={{ color: gapColor }}>{gap == null ? '-' : (gap <= 0 ? '✓' : `${k.inv ? '+' : '-'}${fmt(Math.abs(gap))}${k.unit}`)}</td>
+                  </>}
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table></div>
           <div className="px-4 py-2 border-t border-gray-100 flex items-center gap-3 text-[9px] text-gray-400">
@@ -904,6 +1149,161 @@ autoActuals[m]['Non-Appointment %'] = total > 0 ? parseFloat(percent(intransit.f
           );
         })()}
         </div>);
+      })()}
+
+      {/* ═══ PLAN OF ACTION ═══ */}
+      {view === 'poa' && (() => {
+        /* All below-target KPIs (from current owner OR all) with full action plans */
+        const belowKpis = kpis.filter(k => {
+          const gap = k.inv ? k.actual - k.target : k.target - k.actual;
+          return gap > 0;
+        });
+        /* Aggregate by status for kanban headline */
+        const allActions = [];
+        belowKpis.forEach(k => {
+          const ownerName = owner === 'all' ? k._ownerName : cur?.name;
+          const ownerKey = owner === 'all' ? k._owner : owner;
+          const plan = getActionPlanFor(k, ownerName);
+          plan.forEach((ap, idx) => {
+            const id = `${ownerKey}||${poaMonth}||${k.name}||${idx}`;
+            const st = poaState[id] || {};
+            allActions.push({ id, kpi: k.name, kpiOwner: ownerName, kpiOwnerKey: ownerKey, action: ap.action, plannedOwner: ap.owner, timeline: ap.timeline, impact: ap.impact, status: st.status || 'open', notes: st.notes || '', due: st.due || '', actual: k.actual, target: k.target, unit: k.unit, gap: k.inv ? k.actual - k.target : k.target - k.actual, inv: k.inv });
+          });
+        });
+        /* Apply filter */
+        const filtered = allActions.filter(a => {
+          if (poaFilter === 'open') return a.status === 'open' || a.status === 'inprogress';
+          if (poaFilter === 'done') return a.status === 'done';
+          if (poaFilter === 'mine') return a.plannedOwner && cur?.name && a.plannedOwner.toLowerCase().includes(cur.name.toLowerCase());
+          return true;
+        });
+        const cnt = (s) => allActions.filter(a => a.status === s).length;
+        const stOpen = cnt('open'), stIn = cnt('inprogress'), stDone = cnt('done'), stBlk = cnt('blocked');
+        /* Estimated impact (rough) — sum of "potential pp gap closure" extracted from impact text */
+        const totalGapPP = belowKpis.reduce((s, k) => s + Math.abs(k.inv ? k.actual - k.target : k.target - k.actual), 0);
+        /* Export PoA as CSV */
+        const exportPoA = () => {
+          const rows = [['Owner','KPI','Action','Planned Owner','Timeline','Status','Due','Notes','Impact']];
+          allActions.forEach(a => rows.push([a.kpiOwner, a.kpi, a.action, a.plannedOwner, a.timeline, a.status, a.due, a.notes, a.impact]));
+          const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+          const blob = new Blob([csv], { type: 'text/csv' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a'); a.href = url; a.download = `plan-of-action-${poaMonth}.csv`; a.click(); URL.revokeObjectURL(url);
+        };
+        const STATUS_META = {
+          open: { label: 'Open', color: 'text-gray-700 bg-gray-100', dot: 'bg-gray-400' },
+          inprogress: { label: 'In Progress', color: 'text-blue-700 bg-blue-100', dot: 'bg-blue-500' },
+          done: { label: 'Done', color: 'text-emerald-700 bg-emerald-100', dot: 'bg-emerald-500' },
+          blocked: { label: 'Blocked', color: 'text-red-700 bg-red-100', dot: 'bg-red-500' },
+        };
+        return (
+          <div className="space-y-4">
+            {/* Header strip */}
+            <div className="bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl p-4">
+              <div className="flex items-start justify-between flex-wrap gap-3">
+                <div>
+                  <h3 className="text-sm font-bold text-amber-800 flex items-center gap-2"><Lightbulb className="w-4 h-4" /> Plan of Action — {owner === 'all' ? 'All Owners' : cur?.name}</h3>
+                  <p className="text-[10px] text-gray-600 mt-0.5">{belowKpis.length} KPI{belowKpis.length === 1 ? '' : 's'} below target · {allActions.length} action items · {totalGapPP.toFixed(1)}pp cumulative gap to close</p>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <select value={poaMonth} onChange={e => setPoaMonth(e.target.value)} className="text-[10px] px-2 py-1 border border-amber-200 rounded bg-white">
+                    {MONTHS_LIST.map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                  <div className="flex items-center gap-0.5 bg-white rounded border border-amber-200 p-0.5">
+                    {['all','open','done','mine'].map(f => <button key={f} onClick={() => setPoaFilter(f)} className={`text-[10px] px-2 py-0.5 rounded ${poaFilter === f ? 'bg-amber-500 text-white' : 'text-gray-600 hover:bg-amber-50'}`}>{f === 'all' ? 'All' : f === 'mine' ? 'Mine' : f === 'open' ? 'Open' : 'Done'}</button>)}
+                  </div>
+                  <button onClick={exportPoA} className="text-[10px] px-2 py-1 rounded bg-amber-600 text-white hover:bg-amber-700 font-semibold">Export CSV</button>
+                </div>
+              </div>
+              {/* Status counters */}
+              <div className="grid grid-cols-4 gap-2 mt-3">
+                {[['open',stOpen],['inprogress',stIn],['done',stDone],['blocked',stBlk]].map(([k, c]) => (
+                  <div key={k} className="bg-white rounded-lg px-3 py-2 border border-amber-100">
+                    <div className="flex items-center gap-1.5"><span className={`w-2 h-2 rounded-full ${STATUS_META[k].dot}`} /><p className="text-[9px] text-gray-500 uppercase tracking-wider">{STATUS_META[k].label}</p></div>
+                    <p className="text-xl font-bold text-gray-800 mt-0.5">{c}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Empty state */}
+            {filtered.length === 0 && (
+              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-6 text-center">
+                <CheckCircle className="w-8 h-8 text-emerald-500 mx-auto mb-2" />
+                <p className="text-sm font-semibold text-emerald-700">{belowKpis.length === 0 ? 'All KPIs on or above target. No action plan needed.' : 'No actions match the current filter.'}</p>
+              </div>
+            )}
+
+            {/* Action items grouped by KPI */}
+            {filtered.length > 0 && (
+              <div className="space-y-4">
+                {(() => {
+                  const byKpi = {};
+                  filtered.forEach(a => { if (!byKpi[a.kpi]) byKpi[a.kpi] = []; byKpi[a.kpi].push(a); });
+                  return Object.entries(byKpi).map(([kpi, items]) => {
+                    const first = items[0];
+                    return (
+                      <div key={kpi} className="bg-white rounded-xl shadow-sm border border-gray-100">
+                        <div className="px-4 py-3 border-b border-gray-100 bg-gradient-to-r from-indigo-50/50 to-transparent">
+                          <div className="flex items-center justify-between flex-wrap gap-2">
+                            <div>
+                              <p className="text-[11px] font-bold text-indigo-800">{kpi}</p>
+                              <p className="text-[10px] text-gray-500 mt-0.5">
+                                Owner: <span className="font-semibold text-indigo-600">{first.kpiOwner}</span>
+                                {' · '}Current: <span className="text-red-600 font-semibold">{fmt(first.actual)}{first.unit}</span>
+                                {' → '}Target: <span className="text-blue-600 font-semibold">{fmt(first.target)}{first.unit}</span>
+                                {' · '}Gap: <span className="text-red-500 font-bold">{first.inv ? '+' : '-'}{fmt(first.gap)}{first.unit}</span>
+                              </p>
+                            </div>
+                            <span className="text-[10px] text-gray-400">{items.length} action{items.length === 1 ? '' : 's'}</span>
+                          </div>
+                        </div>
+                        <div className="divide-y divide-gray-100">
+                          {items.map((a) => {
+                            const meta = STATUS_META[a.status];
+                            return (
+                              <div key={a.id} className={`px-4 py-3 transition-colors ${a.status === 'done' ? 'bg-emerald-50/30' : a.status === 'blocked' ? 'bg-red-50/30' : 'hover:bg-gray-50/50'}`}>
+                                <div className="flex items-start gap-3">
+                                  <div className="flex-shrink-0 mt-0.5">
+                                    <button onClick={() => updatePoa(a.id, { status: a.status === 'done' ? 'open' : 'done' })} className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-all ${a.status === 'done' ? 'bg-emerald-500 border-emerald-500' : 'border-gray-300 hover:border-emerald-400'}`}>
+                                      {a.status === 'done' && <CheckCircle className="w-3 h-3 text-white" />}
+                                    </button>
+                                  </div>
+                                  <div className="flex-1">
+                                    <p className={`text-[11px] font-medium ${a.status === 'done' ? 'text-gray-400 line-through' : 'text-gray-800'}`}>{a.action}</p>
+                                    <div className="flex items-center gap-3 mt-1 flex-wrap">
+                                      <span className="text-[9px] text-gray-500">Owner: <strong className="text-indigo-600">{a.plannedOwner}</strong></span>
+                                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 font-semibold">{a.timeline}</span>
+                                      <span className="text-[9px] text-emerald-700">📈 {a.impact}</span>
+                                    </div>
+                                    {/* Editable controls */}
+                                    <div className="flex items-center gap-2 mt-2 flex-wrap">
+                                      <select value={a.status} onChange={e => updatePoa(a.id, { status: e.target.value })} className={`text-[10px] px-2 py-0.5 rounded border ${meta.color} font-semibold`}>
+                                        {Object.entries(STATUS_META).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
+                                      </select>
+                                      <input type="date" value={a.due} onChange={e => updatePoa(a.id, { due: e.target.value })} className="text-[10px] px-2 py-0.5 rounded border border-gray-200 bg-white" title="Due date" />
+                                      <input type="text" value={a.notes} onChange={e => updatePoa(a.id, { notes: e.target.value })} placeholder="Add note..." className="flex-1 min-w-[180px] text-[10px] px-2 py-0.5 rounded border border-gray-200 bg-white focus:border-indigo-400 outline-none" />
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+            )}
+
+            {/* Footer guidance */}
+            <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 text-[10px] text-gray-600">
+              💡 <strong>How to use:</strong> Check off completed actions. Set due dates to track timelines. Add notes for blockers or progress updates. Switch month to plan ahead. Export CSV for team meetings.
+              {' '}<strong>Data is auto-saved</strong> in your browser (localStorage). Sheets sync coming in next iteration.
+            </div>
+          </div>
+        );
       })()}
 
       {/* ═══ AI ROOT CAUSE ═══ */}
