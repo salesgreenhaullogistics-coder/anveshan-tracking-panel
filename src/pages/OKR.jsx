@@ -983,7 +983,7 @@ export default function OKR() {
           const tCost = costR.reduce((s, r) => s + (parseFloat(r.logisticsCost) || 0), 0);
           const tInv = costR.reduce((s, r) => s + (parseFloat(r.invoiceValue) || 0), 0);
           const withPod = del.filter(r => r.pod && r.pod.trim() !== '' && r.pod.trim() !== '-' && r.pod.trim().toLowerCase() !== 'na').length;
-          const platforms = ['Blinkit','Zepto','Swiggy','Amazon','Big Basket'];
+          const platforms = ['Blinkit','Zepto','Swiggy','Amazon','Big Basket','Flipkart'];
           const pDel = {};
           platforms.forEach(pl => { const pR = rows.filter(r => r.platform && r.platform.toLowerCase().includes(pl.toLowerCase())); const pD = pR.filter(r => isDelivered(r.status) || isPartialDelivered(r.status)); pDel[pl] = pR.length > 0 ? percent(pD.length, pR.length) : null; });
 
@@ -1171,12 +1171,13 @@ export default function OKR() {
         {(() => {
           const belowTarget = [];
           kpis.forEach(k => {
+            const trackOwner = owner === 'all' ? k._owner : owner;
             trackCols.forEach(m => {
-              const key = `${owner}||${m}||${k.name}`;
+              const key = `${trackOwner}||${m}||${k.name}`;
               const val = parseFloat(trackingData[key] || (autoActuals[m]?.[k.name] != null ? String(autoActuals[m][k.name]) : ''));
               if (!isNaN(val)) {
                 const gap = k.inv ? val - k.target : k.target - val;
-                if (gap > 0) belowTarget.push({ kpi: k.name, month: m, actual: val, target: k.target, gap, unit: k.unit, inv: k.inv });
+                if (gap > 0) belowTarget.push({ kpi: k.name, owner: k._ownerName, month: m, actual: val, target: k.target, gap, unit: k.unit, inv: k.inv });
               }
             });
           });
@@ -1382,7 +1383,9 @@ export default function OKR() {
       {view === 'rootcause' && (<div className="space-y-4">
         <div className="bg-red-50 border border-red-200 rounded-xl p-4">
           <h3 className="text-sm font-bold text-red-800 flex items-center gap-2 mb-3"><Brain className="w-4 h-4" /> AI Root Cause Analysis — {owner === 'all' ? 'All Owners' : cur?.name}</h3>
-          {rootCauses.length === 0 ? <p className="text-[11px] text-emerald-600">All KPIs are on or above target!</p> : (
+          {rootCauses.length === 0 ? (
+            <p className="text-[11px] text-emerald-600">{scoreInfo.covered === 0 ? 'No live KPI data yet — enter values in Monthly Tracking to surface root causes.' : `All ${scoreInfo.covered} data-backed KPI${scoreInfo.covered === 1 ? '' : 's'} are on or above target.${scoreInfo.covered < scoreInfo.total ? ` (${scoreInfo.total - scoreInfo.covered} manual KPI${scoreInfo.total - scoreInfo.covered === 1 ? '' : 's'} not yet entered.)` : ''}`}</p>
+          ) : (
             <div className="space-y-3">
               {rootCauses.map((rc, i) => (
                 <div key={i} className="bg-white rounded-xl border border-red-100 p-4">
