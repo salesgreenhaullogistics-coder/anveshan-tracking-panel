@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Truck, PackageCheck, Calendar, Clock, AlertTriangle,
   Timer, CheckCircle, RotateCcw, FileText, ClipboardList, BarChart3,
   Target, IndianRupee, Users, FileCheck, Calculator, ChevronLeft,
-  ChevronRight, RefreshCw, Package, Activity, List, Sunrise,
+  ChevronRight, RefreshCw, Package, Activity, List, Sunrise, ShoppingBag,
 } from 'lucide-react';
 
 const NAV_GROUPS = [
@@ -35,6 +35,7 @@ const NAV_GROUPS = [
       { key: 'okr', label: 'OKR', icon: Target },
       { key: 'cost', label: 'Logistics Cost', icon: IndianRupee },
       { key: 'analytics', label: 'Analytics', icon: Activity },
+      { key: 'shopify-analytics', label: 'Shopify Analytics', icon: ShoppingBag },
     ],
   },
   {
