@@ -8,7 +8,7 @@ import {
   RefreshCw, Activity, Truck, MapPin, Layers, X,
 } from 'lucide-react';
 
-const SHIPROCKET_API = '/api/shiprocket?action=orders&per_page=100&max_pages=12';
+const SHIPROCKET_API = '/api/shiprocket?action=orders&per_page=100&max_pages=6';
 
 const srNum = (v) => { const n = parseFloat(v); return isFinite(n) ? n : 0; };
 const srTxt = (v, fb = '') => { const s = String(v == null ? '' : v).trim(); return s || fb; };
@@ -39,7 +39,15 @@ export default function ShopifyAnalytics() {
     let cancelled = false;
     setLoading(true); setError('');
     fetch(SHIPROCKET_API)
-      .then(r => r.json())
+      .then(async r => {
+        const text = await r.text();
+        try { return JSON.parse(text); }
+        catch {
+          /* Non-JSON (e.g. Vercel timeout/crash page) — surface a clean message */
+          if (/timeout/i.test(text)) throw new Error('Shiprocket fetch timed out. Try Refresh — fewer pages will load.');
+          throw new Error(`Server returned a non-JSON response (HTTP ${r.status}).`);
+        }
+      })
       .then(json => {
         if (cancelled) return;
         if (json.configured === false) { setConfigured(false); setRaw([]); return; }

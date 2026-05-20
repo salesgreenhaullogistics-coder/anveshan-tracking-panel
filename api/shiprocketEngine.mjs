@@ -52,45 +52,63 @@ async function getToken(forceRefresh = false) {
   return _token;
 }
 
-async function srGet(path, token) {
-  const res = await fetch(`${SR_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-  });
-  return res;
+async function srGet(path, token, timeoutMs = 12000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(`${SR_BASE}${path}`, {
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      signal: ctrl.signal,
+    });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+async function fetchPage(page, perPage, token) {
+  const res = await srGet(`/orders?page=${page}&per_page=${perPage}`, token);
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    const err = new Error(`HTTP ${res.status} ${t.slice(0, 120)}`);
+    err.status = res.status;
+    throw err;
+  }
+  const json = await res.json();
+  return { rows: Array.isArray(json.data) ? json.data : [], meta: json.meta || null };
 }
 
 /**
- * Fetch orders (read-only), aggregating up to `maxPages`.
- * Auto-retries once with a refreshed token on 401/403.
+ * Fetch orders (read-only). Page 1 is fetched first to learn total_pages,
+ * then the remaining pages are fetched in PARALLEL (so we don't hit the 60s
+ * serverless timeout). Auto-refreshes the token once on 401/403.
  */
-export async function fetchOrders({ perPage = 100, maxPages = 12 } = {}) {
+export async function fetchOrders({ perPage = 100, maxPages = 6 } = {}) {
   let token = await getToken();
-  const all = [];
-  let page = 1;
-  let lastMeta = null;
 
-  while (page <= maxPages) {
-    let res = await srGet(`/orders?page=${page}&per_page=${perPage}`, token);
-    if (res.status === 401 || res.status === 403) {
-      token = await getToken(true); /* refresh once */
-      res = await srGet(`/orders?page=${page}&per_page=${perPage}`, token);
-    }
-    if (!res.ok) {
-      const t = await res.text().catch(() => '');
-      throw new Error(`Shiprocket orders fetch failed (HTTP ${res.status}). ${t.slice(0, 200)}`);
-    }
-    const json = await res.json();
-    const rows = Array.isArray(json.data) ? json.data : [];
-    all.push(...rows);
-    lastMeta = json.meta || null;
-
-    const totalPages = lastMeta?.pagination?.total_pages;
-    if (rows.length < perPage) break;
-    if (totalPages && page >= totalPages) break;
-    page++;
+  /* Page 1 — with one token-refresh retry on auth failure */
+  let first;
+  try {
+    first = await fetchPage(1, perPage, token);
+  } catch (e) {
+    if (e.status === 401 || e.status === 403) {
+      token = await getToken(true);
+      first = await fetchPage(1, perPage, token);
+    } else throw new Error(`Shiprocket orders fetch failed (${e.message})`);
   }
 
-  return { data: all, fetchedPages: page, count: all.length, meta: lastMeta };
+  const totalPages = first.meta?.pagination?.total_pages || 1;
+  const lastPage = Math.min(maxPages, totalPages);
+  const all = [...first.rows];
+
+  if (lastPage > 1 && first.rows.length === perPage) {
+    const pageNums = [];
+    for (let p = 2; p <= lastPage; p++) pageNums.push(p);
+    /* Fetch remaining pages in parallel; ignore individual page failures */
+    const results = await Promise.allSettled(pageNums.map(p => fetchPage(p, perPage, token)));
+    results.forEach(r => { if (r.status === 'fulfilled') all.push(...r.value.rows); });
+  }
+
+  return { data: all, fetchedPages: lastPage, count: all.length, meta: first.meta };
 }
 
 /**
@@ -106,7 +124,7 @@ export async function handleShiprocketRequest(searchParams) {
     return { ok: false, status: 400, body: { error: `Unsupported action "${action}". This endpoint is read-only and supports only "orders".` } };
   }
   const perPage = Math.min(Math.max(parseInt(searchParams.get('per_page') || '100', 10) || 100, 10), 100);
-  const maxPages = Math.min(Math.max(parseInt(searchParams.get('max_pages') || '12', 10) || 12, 1), 30);
+  const maxPages = Math.min(Math.max(parseInt(searchParams.get('max_pages') || '6', 10) || 6, 1), 12);
   try {
     const result = await fetchOrders({ perPage, maxPages });
     return { ok: true, status: 200, body: { configured: true, ...result } };
