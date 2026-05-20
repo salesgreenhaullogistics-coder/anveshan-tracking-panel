@@ -8,7 +8,17 @@ import {
   RefreshCw, Activity, Truck, MapPin, Layers, X,
 } from 'lucide-react';
 
-const SHIPROCKET_API = '/api/shiprocket?action=orders&per_page=100&max_pages=6';
+const PER_PAGE = 100;
+const BATCH_PAGES = 6; /* pages per serverless request — keeps each call under Vercel limits */
+const srApiUrl = (startPage) => `/api/shiprocket?action=orders&per_page=${PER_PAGE}&max_pages=${BATCH_PAGES}&start_page=${startPage}`;
+/* How many orders to load — selectable so analytics can span more than just today */
+const LOAD_TARGETS = [
+  { label: 'Last ~600', value: 600 },
+  { label: 'Last ~2,000', value: 2000 },
+  { label: 'Last ~5,000', value: 5000 },
+  { label: 'Last ~10,000', value: 10000 },
+  { label: 'Max available', value: Infinity },
+];
 
 const srNum = (v) => { const n = parseFloat(v); return isFinite(n) ? n : 0; };
 const srTxt = (v, fb = '') => { const s = String(v == null ? '' : v).trim(); return s || fb; };
@@ -34,32 +44,54 @@ export default function ShopifyAnalytics() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [channelFilter, setChannelFilter] = useState('all'); /* 'all' or a specific channel name */
   const [drill, setDrill] = useState(null);
+  const [target, setTarget] = useState(2000); /* how many orders to load */
+  const [progress, setProgress] = useState(0); /* loaded count during fetch */
+
+  const fetchBatch = async (startPage) => {
+    const r = await fetch(srApiUrl(startPage));
+    const text = await r.text();
+    let json;
+    try { json = JSON.parse(text); }
+    catch {
+      if (/timeout/i.test(text)) throw new Error('Shiprocket batch timed out — try a smaller load size.');
+      throw new Error(`Server returned a non-JSON response (HTTP ${r.status}).`);
+    }
+    return json;
+  };
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true); setError('');
-    fetch(SHIPROCKET_API)
-      .then(async r => {
-        const text = await r.text();
-        try { return JSON.parse(text); }
-        catch {
-          /* Non-JSON (e.g. Vercel timeout/crash page) — surface a clean message */
-          if (/timeout/i.test(text)) throw new Error('Shiprocket fetch timed out. Try Refresh — fewer pages will load.');
-          throw new Error(`Server returned a non-JSON response (HTTP ${r.status}).`);
+    (async () => {
+      setLoading(true); setError(''); setProgress(0);
+      try {
+        const acc = [];
+        let startPage = 1;
+        let configuredOk = true;
+        /* Loop batches until we hit the target order count or run out of pages */
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const json = await fetchBatch(startPage);
+          if (cancelled) return;
+          if (json.configured === false) { configuredOk = false; setConfigured(false); setRaw([]); break; }
+          if (json.error) { throw new Error(json.error); }
+          const rows = Array.isArray(json.data) ? json.data : [];
+          acc.push(...rows);
+          setProgress(acc.length);
+          setRaw([...acc]);            /* progressive render */
+          setConfigured(true);
+          const reachedTarget = acc.length >= target;
+          if (!json.hasMore || reachedTarget) break;
+          startPage = (json.endPage || startPage + BATCH_PAGES - 1) + 1;
         }
-      })
-      .then(json => {
-        if (cancelled) return;
-        if (json.configured === false) { setConfigured(false); setRaw([]); return; }
-        if (json.error) { setError(json.error); setRaw([]); return; }
-        setConfigured(true);
-        setRaw(Array.isArray(json.data) ? json.data : []);
-        setLastSync(new Date());
-      })
-      .catch(err => { if (!cancelled) setError(err.message || 'Failed to fetch'); })
-      .finally(() => { if (!cancelled) setLoading(false); });
+        if (configuredOk && !cancelled) setLastSync(new Date());
+      } catch (err) {
+        if (!cancelled) setError(err.message || 'Failed to fetch');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
     return () => { cancelled = true; };
-  }, [refreshKey]);
+  }, [refreshKey, target]);
 
   const orders = useMemo(() => raw.map((o, i) => {
     const created = srDate(o.created_at || o.order_date || o.channel_created_at);
@@ -170,10 +202,14 @@ export default function ShopifyAnalytics() {
           {lastSync && <span className="text-[10px] text-gray-400">Synced {lastSync.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</span>}
           <span className="text-[10px] text-gray-400">{data.length} orders</span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <label className="text-[10px] text-gray-500 font-medium">Load:</label>
+          <select value={target} onChange={e => setTarget(e.target.value === 'Infinity' ? Infinity : parseInt(e.target.value, 10))} className="text-[10px] px-2 py-1 border border-amber-200 rounded bg-white text-amber-700 font-semibold">
+            {LOAD_TARGETS.map(t => <option key={t.label} value={t.value === Infinity ? 'Infinity' : t.value}>{t.label}</option>)}
+          </select>
           <label className="text-[10px] text-gray-500 font-medium">Channel:</label>
           <select value={channelFilter} onChange={e => setChannelFilter(e.target.value)} className="text-[10px] px-2 py-1 border border-indigo-200 rounded bg-white text-indigo-700 font-semibold">
-            <option value="all">All channels ({orders.length})</option>
+            <option value="all">All ({orders.length})</option>
             {channels.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
           <button onClick={() => setRefreshKey(k => k + 1)} className="text-[11px] px-3 py-1.5 bg-indigo-600 text-white rounded-lg font-semibold flex items-center gap-1"><RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} /> Refresh</button>
@@ -181,7 +217,10 @@ export default function ShopifyAnalytics() {
       </div>
 
       {loading && raw.length === 0 && (
-        <div className="bg-blue-50 border border-blue-200 rounded-xl p-6 text-center"><RefreshCw className="w-8 h-8 text-blue-500 mx-auto mb-2 animate-spin" /><p className="text-[12px] text-blue-700 font-semibold">Loading Shopify orders from Shiprocket…</p></div>
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-6 text-center"><RefreshCw className="w-8 h-8 text-blue-500 mx-auto mb-2 animate-spin" /><p className="text-[12px] text-blue-700 font-semibold">Loading orders from Shiprocket…</p></div>
+      )}
+      {loading && raw.length > 0 && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-1.5 flex items-center gap-2 text-[11px] text-blue-700"><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Loading more… {progress.toLocaleString('en-IN')} orders so far{target !== Infinity ? ` (target ${target.toLocaleString('en-IN')})` : ''}</div>
       )}
       {error && <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-[11px] text-red-700"><strong>Error:</strong> {error}. <button onClick={() => setRefreshKey(k => k + 1)} className="underline ml-1">Retry</button></div>}
 

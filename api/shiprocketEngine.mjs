@@ -105,37 +105,39 @@ async function fetchPage(page, perPage, token) {
 }
 
 /**
- * Fetch orders (read-only). Page 1 is fetched first to learn total_pages,
- * then the remaining pages are fetched in PARALLEL (so we don't hit the 60s
- * serverless timeout). Auto-refreshes the token once on 401/403.
+ * Fetch one BATCH of order pages (read-only), starting at `startPage`, fetching
+ * up to `maxPages` pages in PARALLEL (so we stay under the 60s serverless limit).
+ * The frontend calls this repeatedly with an advancing startPage to accumulate
+ * a large history without ever exceeding Vercel's per-request limits.
+ * Auto-refreshes the token once on 401/403 (checked on the first page of the batch).
  */
-export async function fetchOrders({ perPage = 100, maxPages = 6 } = {}) {
+export async function fetchOrders({ perPage = 100, maxPages = 6, startPage = 1 } = {}) {
   let token = await getToken();
 
-  /* Page 1 — with one token-refresh retry on auth failure */
+  /* First page of this batch — with one token-refresh retry on auth failure */
   let first;
   try {
-    first = await fetchPage(1, perPage, token);
+    first = await fetchPage(startPage, perPage, token);
   } catch (e) {
     if (e.status === 401 || e.status === 403) {
       token = await getToken(true);
-      first = await fetchPage(1, perPage, token);
+      first = await fetchPage(startPage, perPage, token);
     } else throw new Error(`Shiprocket orders fetch failed (${e.message})`);
   }
 
-  const totalPages = first.meta?.pagination?.total_pages || 1;
-  const lastPage = Math.min(maxPages, totalPages);
+  const totalPages = first.meta?.pagination?.total_pages || startPage;
+  const endPage = Math.min(startPage + maxPages - 1, totalPages);
   const all = [...first.rows];
 
-  if (lastPage > 1 && first.rows.length === perPage) {
+  if (endPage > startPage && first.rows.length === perPage) {
     const pageNums = [];
-    for (let p = 2; p <= lastPage; p++) pageNums.push(p);
-    /* Fetch remaining pages in parallel; ignore individual page failures */
+    for (let p = startPage + 1; p <= endPage; p++) pageNums.push(p);
     const results = await Promise.allSettled(pageNums.map(p => fetchPage(p, perPage, token)));
     results.forEach(r => { if (r.status === 'fulfilled') all.push(...r.value.rows); });
   }
 
-  return { data: all, fetchedPages: lastPage, count: all.length, meta: first.meta };
+  const hasMore = endPage < totalPages && first.rows.length === perPage;
+  return { data: all, startPage, endPage, totalPages, hasMore, count: all.length, meta: first.meta };
 }
 
 /**
@@ -151,9 +153,10 @@ export async function handleShiprocketRequest(searchParams) {
     return { ok: false, status: 400, body: { error: `Unsupported action "${action}". This endpoint is read-only and supports only "orders".` } };
   }
   const perPage = Math.min(Math.max(parseInt(searchParams.get('per_page') || '100', 10) || 100, 10), 100);
-  const maxPages = Math.min(Math.max(parseInt(searchParams.get('max_pages') || '6', 10) || 6, 1), 12);
+  const maxPages = Math.min(Math.max(parseInt(searchParams.get('max_pages') || '6', 10) || 6, 1), 10);
+  const startPage = Math.max(parseInt(searchParams.get('start_page') || '1', 10) || 1, 1);
   try {
-    const result = await fetchOrders({ perPage, maxPages });
+    const result = await fetchOrders({ perPage, maxPages, startPage });
     return { ok: true, status: 200, body: { configured: true, ...result } };
   } catch (err) {
     return { ok: false, status: 502, body: { configured: true, error: err.message || String(err) } };
