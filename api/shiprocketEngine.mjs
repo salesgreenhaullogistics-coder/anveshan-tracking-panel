@@ -65,6 +65,32 @@ async function srGet(path, token, timeoutMs = 12000) {
   }
 }
 
+/* Project each raw Shiprocket order down to only the fields the analytics UI needs.
+   Shiprocket returns very large objects; slimming keeps the response well under
+   Vercel's 4.5 MB limit and speeds up transfer. */
+function slimOrder(o) {
+  const products = Array.isArray(o.products) ? o.products.map(p => ({
+    name: p.name, sku: p.sku, channel_sku: p.channel_sku,
+    quantity: p.quantity, selling_price: p.selling_price, price: p.price,
+  })) : [];
+  return {
+    id: o.id,
+    channel_order_id: o.channel_order_id,
+    order_id: o.order_id,
+    channel_name: o.channel_name || o.channel,
+    customer_name: o.customer_name,
+    customer_city: o.customer_city || o.city,
+    customer_state: o.customer_state || o.state,
+    payment_method: o.payment_method,
+    total: o.total,
+    status: o.status,
+    courier_name: o.courier_name || o.courier,
+    awb_code: o.awb_code || o.awb,
+    created_at: o.created_at || o.order_date || o.channel_created_at,
+    products,
+  };
+}
+
 async function fetchPage(page, perPage, token) {
   const res = await srGet(`/orders?page=${page}&per_page=${perPage}`, token);
   if (!res.ok) {
@@ -74,7 +100,8 @@ async function fetchPage(page, perPage, token) {
     throw err;
   }
   const json = await res.json();
-  return { rows: Array.isArray(json.data) ? json.data : [], meta: json.meta || null };
+  const rows = Array.isArray(json.data) ? json.data.map(slimOrder) : [];
+  return { rows, meta: json.meta || null };
 }
 
 /**
