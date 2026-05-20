@@ -469,14 +469,24 @@ export default function OKR() {
     return defs[owner] || [];
   }, [actuals, owner]);
 
-  /* ═══ Scores ═══ */
-  const overallScore = useMemo(() => {
+  /* ═══ Scores — computed ONLY from KPIs that have live data; weights renormalised.
+     Manual / no-data KPIs are excluded so they don't inject a fake "50" into the score. */
+  const computeScore = (kpiList) => {
+    const withData = kpiList.filter(k => k.actual != null && isFinite(k.actual));
+    const totalW = kpiList.reduce((s, k) => s + k.w, 0);
     let tw = 0, ws = 0;
-    kpis.forEach(k => { const s = scorePct(k.actual, k.target, k.base, k.exc, k.inv); tw += k.w; ws += s * k.w / 100; });
-    return tw > 0 ? Math.round(ws / tw * 100) : 0;
-  }, [kpis]);
+    withData.forEach(k => { const s = scorePct(k.actual, k.target, k.base, k.exc, k.inv); tw += k.w; ws += s * k.w / 100; });
+    return {
+      score: tw > 0 ? Math.round(ws / tw * 100) : null,
+      covered: withData.length,
+      total: kpiList.length,
+      weightPct: totalW > 0 ? Math.round(tw / totalW * 100) : 0,
+    };
+  };
 
-  const grade = getGrade(overallScore);
+  const scoreInfo = useMemo(() => computeScore(kpis), [kpis]);
+  const overallScore = scoreInfo.score;
+  const grade = overallScore == null ? { label: 'No Data', color: 'text-gray-400 bg-gray-50 border-gray-200', bar: 'bg-gray-300' } : getGrade(overallScore);
 
   /* Per-owner scores for "All" combined view */
   const allOwnerScores = useMemo(() => {
@@ -484,12 +494,10 @@ export default function OKR() {
     const ownerKeys = ['sandeep','prashant','nandlal','anoop'];
     return ownerKeys.map(oKey => {
       const ownerKpis = kpis.filter(k => k._owner === oKey);
-      let tw = 0, ws = 0;
-      ownerKpis.forEach(k => { const s = scorePct(k.actual, k.target, k.base, k.exc, k.inv); tw += k.w; ws += s * k.w / 100; });
-      const score = tw > 0 ? Math.round(ws / tw * 100) : 0;
+      const si = computeScore(ownerKpis);
       const info = KPI_OWNERS.find(o => o.key === oKey);
       const atRisk = ownerKpis.filter(k => { const gap = kpiGap(k); return gap != null && gap > 0; }).length;
-      return { key: oKey, name: info?.name || oKey, role: info?.role || '', score, grade: getGrade(score), kpiCount: ownerKpis.length, atRisk };
+      return { key: oKey, name: info?.name || oKey, role: info?.role || '', score: si.score, covered: si.covered, total: si.total, grade: si.score == null ? { label: 'No Data', color: 'text-gray-400 bg-gray-50 border-gray-200', bar: 'bg-gray-300' } : getGrade(si.score), kpiCount: ownerKpis.length, atRisk };
     });
   }, [owner, kpis]);
 
@@ -501,7 +509,7 @@ export default function OKR() {
       const gap = kpiGap(k);
       if (gap != null && gap > 0) {
         let reason = '', action = '', impact = '';
-        if (k.name.includes('Cost')) { reason = 'High RTO rate + courier pricing'; action = 'Negotiate courier contracts, reduce RTO'; impact = `Reducing cost by ${fmt(gap)}pp saves ~${currency(actuals.total * gap / 100 * 50)}`; }
+        if (k.name.includes('Cost')) { reason = 'High RTO rate + courier pricing'; action = 'Negotiate courier contracts, reduce RTO'; impact = `Close ${fmt(gap)}pp gap to hit ${fmt(k.target)}% target`; }
         else if (k.name.toLowerCase().includes('transit')) { reason = 'Courier delay + appointment pending'; action = 'Escalate aged shipments, auto-reschedule appointments'; impact = `${fmt(gap)}pp improvement needed`; }
         else if (k.name.includes('RTO')) { reason = 'High return rate — address quality or COD issues'; action = 'Address verification, OTP for risky orders, COD hold for repeat RTO customers'; impact = `${fmt(gap)}pp RTO reduction needed`; }
         else if (k.name.includes('OTIF') || k.name.includes('Channel') || k.name.includes('Delivery')) { reason = 'Platform SLA miss + zone bottleneck'; action = 'Increase courier alignment, optimize zone routing'; impact = `${fmt(gap)}pp gap to close`; }
@@ -552,8 +560,8 @@ export default function OKR() {
         <div className="flex items-center justify-between">
           <div><h2 className="text-lg font-bold">{owner === 'all' ? 'KPI Command Center — All Owners' : `${cur?.name}'s KPI Command Center`}</h2><p className="text-indigo-200 text-[11px]">{owner === 'all' ? 'Combined performance across all KPI owners' : cur?.role}</p></div>
           <div className="flex items-center gap-6">
-            <div className="text-center"><p className="text-3xl font-bold">{overallScore}</p><span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${grade.color}`}>{grade.label}</span></div>
-            {forecast && <div className="text-center"><p className="text-xl font-bold">{forecast.nextMonth}%</p><p className="text-[9px] text-indigo-200">Next Month Forecast</p><span className={`text-[9px] px-1.5 py-0.5 rounded ${forecast.risk === 'HIGH' ? 'bg-red-500' : forecast.risk === 'MEDIUM' ? 'bg-amber-500' : 'bg-emerald-500'}`}>{forecast.risk} Risk</span></div>}
+            <div className="text-center"><p className="text-3xl font-bold">{overallScore ?? '—'}</p><span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${grade.color}`}>{grade.label}</span><p className="text-[8px] text-indigo-200 mt-0.5">{scoreInfo.covered}/{scoreInfo.total} KPIs scored</p></div>
+            {forecast && <div className="text-center"><p className="text-xl font-bold">{forecast.nextMonth}%</p><p className="text-[9px] text-indigo-200">Next-Mo Delivery Forecast</p><span className={`text-[9px] px-1.5 py-0.5 rounded ${forecast.risk === 'HIGH' ? 'bg-red-500' : forecast.risk === 'MEDIUM' ? 'bg-amber-500' : 'bg-emerald-500'}`}>{forecast.risk} Risk</span></div>}
           </div>
         </div>
         {/* Owner score cards in All view */}
@@ -568,16 +576,17 @@ export default function OKR() {
                     <p className="text-[9px] text-indigo-200">{os.role}</p>
                   </div>
                   <div className="text-right">
-                    <p className="text-2xl font-bold">{os.score}</p>
+                    <p className="text-2xl font-bold">{os.score ?? '—'}</p>
                     <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${os.grade.color}`}>{os.grade.label}</span>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 mt-2 text-[9px]">
-                  <span className="text-indigo-200">{os.kpiCount} KPIs</span>
+                  <span className="text-indigo-200">{os.covered}/{os.total} scored</span>
                   {os.atRisk > 0 && <span className="bg-red-500/30 text-red-200 px-1.5 py-0.5 rounded">{os.atRisk} at risk</span>}
-                  {os.atRisk === 0 && <span className="bg-emerald-500/30 text-emerald-200 px-1.5 py-0.5 rounded">All on target</span>}
+                  {os.atRisk === 0 && os.covered > 0 && <span className="bg-emerald-500/30 text-emerald-200 px-1.5 py-0.5 rounded">All on target</span>}
+                  {os.covered === 0 && <span className="bg-gray-500/30 text-gray-200 px-1.5 py-0.5 rounded">Awaiting data</span>}
                 </div>
-                <div className="w-full h-1.5 bg-white/10 rounded-full mt-2 overflow-hidden"><div className={`h-full rounded-full ${os.grade.bar}`} style={{ width: `${Math.min(100, os.score)}%` }} /></div>
+                <div className="w-full h-1.5 bg-white/10 rounded-full mt-2 overflow-hidden"><div className={`h-full rounded-full ${os.grade.bar}`} style={{ width: `${Math.min(100, os.score || 0)}%` }} /></div>
               </button>
             ))}
           </div>
@@ -624,7 +633,7 @@ export default function OKR() {
           );
         })()}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <KPICard title="KPI Score" value={overallScore} icon={Target} color={overallScore >= 80 ? 'green' : overallScore >= 60 ? 'yellow' : 'red'} subtitle={grade.label} />
+          <KPICard title="KPI Score" value={overallScore ?? '—'} icon={Target} color={overallScore == null ? 'gray' : overallScore >= 80 ? 'green' : overallScore >= 60 ? 'yellow' : 'red'} subtitle={`${grade.label} · ${scoreInfo.covered}/${scoreInfo.total} scored`} />
           <KPICard title="KPIs at Risk" value={rootCauses.length} icon={AlertTriangle} color="red" subtitle={`of ${kpis.length} total`} />
           <KPICard title="Forecast" value={forecast ? `${forecast.nextMonth}%` : '-'} icon={TrendingUp} color={forecast?.risk === 'LOW' ? 'green' : 'red'} subtitle={forecast ? `${forecast.risk} Risk` : ''} />
         </div>
@@ -649,7 +658,7 @@ export default function OKR() {
                         <p className="text-[11px] font-bold text-indigo-700">{oInfo?.name}</p>
                         <p className="text-[9px] text-gray-400">{oInfo?.role}</p>
                       </div>
-                      {oScore && <div className="text-right"><p className="text-lg font-bold text-indigo-700">{oScore.score}</p><span className={`text-[9px] font-bold px-1 rounded border ${oScore.grade.color}`}>{oScore.grade.label}</span></div>}
+                      {oScore && <div className="text-right"><p className="text-lg font-bold text-indigo-700">{oScore.score ?? '—'}</p><span className={`text-[9px] font-bold px-1 rounded border ${oScore.grade.color}`}>{oScore.grade.label}</span></div>}
                     </div>
                     {best && (
                       <div className="bg-emerald-50/50 border border-emerald-100 rounded-lg p-1.5 mb-1.5">
@@ -692,7 +701,7 @@ export default function OKR() {
                     <div className="flex items-center gap-2 mb-2">
                       <button onClick={() => { setOwner(oKey); setExpKPI(null); }} className="text-[11px] font-bold text-indigo-700 hover:underline">{oInfo?.name}</button>
                       <span className="text-[9px] text-gray-400">{oInfo?.role}</span>
-                      {oScore && <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ml-auto ${oScore.grade.color}`}>{oScore.score} — {oScore.grade.label}</span>}
+                      {oScore && <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ml-auto ${oScore.grade.color}`}>{oScore.score ?? '—'} — {oScore.grade.label}</span>}
                     </div>
                     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
                       {ownerKpis.map(k => {
@@ -808,14 +817,15 @@ export default function OKR() {
 
       {/* ═══ KPI SCORECARD ═══ */}
       {view === 'scorecard' && (<div className="space-y-4">
-        {/* Quick-health strip — count of KPIs in each grade bucket */}
+        {/* Quick-health strip — count of KPIs in each grade bucket (only KPIs with live data) */}
         {(() => {
-          const gradeBuckets = { Exceptional: 0, High: 0, Target: 0, Base: 0, Below: 0 };
+          const gradeBuckets = { Exceptional: 0, High: 0, Target: 0, Base: 0, Below: 0, 'No Data': 0 };
           kpis.forEach(k => {
+            if (k.actual == null || !isFinite(k.actual)) { gradeBuckets['No Data']++; return; }
             const g = getGrade(scorePct(k.actual, k.target, k.base, k.exc, k.inv));
             gradeBuckets[g.label]++;
           });
-          const bucketColors = { Exceptional: 'bg-emerald-500', High: 'bg-blue-500', Target: 'bg-amber-500', Base: 'bg-orange-500', Below: 'bg-red-500' };
+          const bucketColors = { Exceptional: 'bg-emerald-500', High: 'bg-blue-500', Target: 'bg-amber-500', Base: 'bg-orange-500', Below: 'bg-red-500', 'No Data': 'bg-gray-300' };
           return (
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
               <div className="flex items-center justify-between mb-3">
@@ -824,11 +834,12 @@ export default function OKR() {
                   <p className="text-[10px] text-gray-400">{kpis.length} KPI{kpis.length === 1 ? '' : 's'} grouped by performance grade</p>
                 </div>
                 <div className="text-right">
-                  <p className="text-2xl font-bold text-indigo-700">{overallScore}<span className="text-sm text-gray-400">/100</span></p>
+                  <p className="text-2xl font-bold text-indigo-700">{overallScore ?? '—'}<span className="text-sm text-gray-400">/100</span></p>
                   <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${grade.color}`}>{grade.label}</span>
+                  <p className="text-[9px] text-gray-400 mt-0.5">{scoreInfo.covered}/{scoreInfo.total} KPIs scored · {scoreInfo.weightPct}% weight covered</p>
                 </div>
               </div>
-              <div className="grid grid-cols-5 gap-2">
+              <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
                 {Object.entries(gradeBuckets).map(([lbl, ct]) => {
                   const pct = kpis.length > 0 ? (ct / kpis.length * 100) : 0;
                   return (
@@ -879,15 +890,16 @@ export default function OKR() {
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
             <h3 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2"><BarChart3 className="w-4 h-4 text-indigo-500" /> Owner Score Comparison</h3>
             <div className="space-y-2">
-              {[...allOwnerScores].sort((a, b) => b.score - a.score).map(os => (
+              {[...allOwnerScores].sort((a, b) => (b.score ?? -1) - (a.score ?? -1)).map(os => (
                 <div key={os.key} className="flex items-center gap-3">
                   <button onClick={() => setOwner(os.key)} className="w-24 text-left text-[11px] font-semibold text-indigo-700 hover:underline">{os.name}</button>
                   <div className="flex-1 h-5 bg-gray-100 rounded-full overflow-hidden relative">
-                    <div className={`h-full ${os.grade.bar} rounded-full flex items-center justify-end pr-2 transition-all`} style={{ width: `${Math.min(100, os.score)}%` }}>
-                      <span className="text-[10px] font-bold text-white">{os.score}</span>
+                    <div className={`h-full ${os.grade.bar} rounded-full flex items-center justify-end pr-2 transition-all`} style={{ width: `${Math.min(100, os.score || 0)}%` }}>
+                      <span className="text-[10px] font-bold text-white">{os.score ?? '—'}</span>
                     </div>
                   </div>
                   <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border w-20 text-center ${os.grade.color}`}>{os.grade.label}</span>
+                  <span className="text-[9px] text-gray-400 w-12">{os.covered}/{os.total}</span>
                   {os.atRisk > 0 && <span className="text-[9px] text-red-500 font-semibold w-16">{os.atRisk} at risk</span>}
                 </div>
               ))}
@@ -943,7 +955,7 @@ export default function OKR() {
               <div key={i} className="flex items-center gap-3 p-2.5 bg-white rounded-lg border border-amber-100">
                 <span className="text-[10px] font-bold text-amber-600 w-5">{i + 1}.</span>
                 <div className="flex-1"><p className="text-[11px] font-semibold text-gray-800">{rc.kpi}</p><p className="text-[10px] text-gray-500">Actual: <span className="text-red-500 font-semibold">{fmt(rc.actual)}{rc.unit}</span> → Target: <span className="text-blue-600 font-semibold">{fmt(rc.target)}{rc.unit}</span></p></div>
-                <div className="text-right"><p className="text-[11px] font-bold text-red-600">{rc.inv ? '+' : '-'}{fmt(rc.gap)}{rc.unit}</p><p className="text-[9px] text-amber-500">Loss: {currency(rc.weightage)}</p></div>
+                <div className="text-right"><p className="text-[11px] font-bold text-red-600">{rc.inv ? '+' : '-'}{fmt(rc.gap)}{rc.unit}</p><p className="text-[9px] text-amber-500">Weight: {rc.weightage}%</p></div>
               </div>
             ))}</div>
           </div>
@@ -1375,7 +1387,7 @@ export default function OKR() {
               {rootCauses.map((rc, i) => (
                 <div key={i} className="bg-white rounded-xl border border-red-100 p-4">
                   <div className="flex items-start justify-between mb-2">
-                    <div><p className="text-[12px] font-bold text-gray-800">{rc.kpi}</p><p className="text-[10px] text-gray-500">Weightage: {rc.weightage}% | Weight: {rc.weightage}%</p></div>
+                    <div><p className="text-[12px] font-bold text-gray-800">{rc.kpi}</p><p className="text-[10px] text-gray-500">Owner: {rc.owner || '-'} · Weight: {rc.weightage}%</p></div>
                     <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full border border-red-200">{rc.inv ? '+' : '-'}{fmt(rc.gap)}{rc.unit} gap</span>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-[10px]">
