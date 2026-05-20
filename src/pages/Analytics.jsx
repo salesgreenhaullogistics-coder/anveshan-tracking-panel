@@ -1,7 +1,8 @@
-import React, { useMemo, useState, useCallback } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import { useData } from '../context/DataContext';
 import KPICard from '../components/KPICard';
 import DataTable from '../components/DataTable';
+import ShopifyAnalytics from './ShopifyAnalytics';
 import { BarChart, LineChart, PieChart, DoughnutChart } from '../components/Charts';
 import {
   COLORS, groupBy, currency, percent, safeParseDate, formatDate, daysBetween,
@@ -12,7 +13,7 @@ import {
   ArrowUpRight, ArrowDownRight, Minus, X, Eye, AlertTriangle,
   Zap, Target, Lightbulb, ShieldAlert, ArrowRightLeft, BarChart3,
   ChevronRight, ChevronDown, Activity, Package, CheckCircle, RotateCcw,
-  Truck, Calendar,
+  Truck, Calendar, RefreshCw, Download, Search, Filter, Clock, ShoppingBag, Layers,
 } from 'lucide-react';
 
 /* ─── constants ─── */
@@ -22,6 +23,7 @@ const TABS = [
   { key: 'zone', label: 'Zone & City', icon: MapPin },
   { key: 'cost', label: 'Cost Intelligence', icon: IndianRupee },
   { key: 'insights', label: 'AI Insights', icon: Brain },
+  { key: 'shopify', label: 'Shopify Analytics', icon: Package },
 ];
 
 const MABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -378,6 +380,7 @@ export default function Analytics() {
       {activeTab === 'zone' && <ZoneCityTab zoneStats={zoneStats} cityStats={cityStats} heatmap={heatmap} platformStats={platformStats} classified={classified} onDrill={setDrillDown} />}
       {activeTab === 'cost' && <CostTab classified={classified} platformStats={platformStats} zoneStats={zoneStats} cityStats={cityStats} monthlyMetrics={monthlyMetrics} onDrill={setDrillDown} />}
       {activeTab === 'insights' && <AITab insights={aiInsights} monthlyMetrics={monthlyMetrics} platformStats={platformStats} zoneStats={zoneStats} overallMetrics={overallMetrics} onDrill={setDrillDown} />}
+      {activeTab === 'shopify' && <ShopifyAnalytics />}
 
       {drillDown && <DrillDownModal title={drillDown.title} data={drillDown.data} onClose={() => setDrillDown(null)} />}
     </div>

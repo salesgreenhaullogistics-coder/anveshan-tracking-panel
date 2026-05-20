@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import https from 'https';
 import { handleShipmentApiRequest } from './api/shipmentEngine.mjs';
+import { handleShiprocketRequest } from './api/shiprocketEngine.mjs';
 
 const APPS_SCRIPT_URL =
   'https://script.google.com/macros/s/AKfycbzu8zSSmcPeuMAxUdDylahx7UuNBmMXWYd8W1wCVptdR0oUVLEIrYJiz37TRW_qPk2kQA/exec';
@@ -84,6 +85,21 @@ function apiProxyPlugin() {
           res.end(body);
         } catch (err) {
           kpiInFlight = null;
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+
+      server.middlewares.use('/api/shiprocket', async (req, res) => {
+        try {
+          const fullUrl = new URL(`/api/shiprocket${req.url || ''}`, 'http://localhost');
+          const result = await handleShiprocketRequest(fullUrl.searchParams);
+          res.writeHead(result.status || 200, {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+          });
+          res.end(JSON.stringify(result.body));
+        } catch (err) {
           res.writeHead(502, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: err.message }));
         }
