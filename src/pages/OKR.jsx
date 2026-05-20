@@ -157,6 +157,16 @@ function Sparkline({ values, width = 80, height = 22, color = '#6366F1', target 
 const MONTHS_LIST = ["Mar'26","Apr'26","May'26","Jun'26","Jul'26","Aug'26"];
 const PERIODS = ['Monthly','Quarterly','Yearly'];
 const fmt = v => v != null && isFinite(v) ? (Number.isInteger(v) ? String(v) : v.toFixed(1)) : '-';
+/* Null-safe gap: returns null when actual is missing (manual KPI not yet entered / no data for month) */
+const kpiGap = (k) => (k.actual == null || !isFinite(k.actual)) ? null : (k.inv ? k.actual - k.target : k.target - k.actual);
+
+/* Data-source badge — tells viewer where a KPI number comes from so they can trust it */
+function SrcBadge({ src, n }) {
+  if (src === 'auto') return <span title={`Computed live from ${n != null ? n.toLocaleString('en-IN') + ' ' : ''}shipment records`} className="text-[8px] font-bold px-1 py-0.5 rounded bg-emerald-100 text-emerald-700 whitespace-nowrap">AUTO{n != null ? ` ${n >= 1000 ? (n / 1000).toFixed(1) + 'k' : n}` : ''}</span>;
+  if (src === 'proxy') return <span title="Derived/estimated — not a direct measurement" className="text-[8px] font-bold px-1 py-0.5 rounded bg-amber-100 text-amber-700 whitespace-nowrap">PROXY</span>;
+  if (src === 'manual') return <span title="Manually entered — no shipment-data source. Fill in Monthly Tracking." className="text-[8px] font-bold px-1 py-0.5 rounded bg-gray-200 text-gray-600 whitespace-nowrap">MANUAL</span>;
+  return null;
+}
 
 function getGrade(pct) {
   if (pct >= 95) return { label: 'Exceptional', color: 'text-emerald-700 bg-emerald-50 border-emerald-200', bar: 'bg-emerald-500' };
@@ -320,7 +330,14 @@ export default function OKR() {
 
     const platforms = ['Amazon','Flipkart','Blinkit','Zepto','Swiggy','Big Basket'];
     const platDel = {};
-    platforms.forEach(pl => { const pR = recent.filter(r => r.platform && r.platform.toLowerCase().includes(pl.toLowerCase())); const pD = pR.filter(r => isDelivered(r.status) || isPartialDelivered(r.status)); platDel[pl] = pR.length > 0 ? percent(pD.length, pR.length) : 0; });
+    const platDelCount = {};
+    platforms.forEach(pl => { const pR = recent.filter(r => r.platform && r.platform.toLowerCase().includes(pl.toLowerCase())); const pD = pR.filter(r => isDelivered(r.status) || isPartialDelivered(r.status)); platDelCount[pl] = pR.length; platDel[pl] = pR.length > 0 ? percent(pD.length, pR.length) : null; });
+    /* Average delivery % across only platforms that actually have data (avoids divide-by-N understatement) */
+    const avgPlatDel = (list) => {
+      const vals = list.map(pl => platDel[pl]).filter(v => v != null);
+      return vals.length ? Math.round(vals.reduce((s, v) => s + v, 0) / vals.length * 10) / 10 : null;
+    };
+    const platDataCount = (list) => list.reduce((s, pl) => s + (platDelCount[pl] || 0), 0);
 
     const withPod = del.filter(r => r.pod && r.pod.trim() !== '' && r.pod.trim() !== '-' && r.pod.trim().toLowerCase() !== 'na').length;
     const podPct = del.length > 0 ? percent(withPod, del.length) : 0;
@@ -349,7 +366,12 @@ export default function OKR() {
       return { month, total: rows.length, delPct: percent(d, rows.length), rtoPct: percent(rt, rows.length) };
     });
 
-    return { delPct, rtoPct, costPct, avgTAT, agePcts, platDel, podPct, apptPct, noApptPcts, rtoAgePcts, platRTO, monthTrend, total, delivered: del.length, rto: rto.length, intransit: intransit.length };
+    return {
+      delPct, rtoPct, costPct, avgTAT, agePcts, platDel, platDelCount, avgPlatDel, platDataCount,
+      podPct, apptPct, noApptPcts, rtoAgePcts, platRTO, monthTrend,
+      total, delivered: del.length, rto: rto.length, intransit: intransit.length,
+      costRowsCount: costRows.length, podDenom: del.length, apptDenom: intransit.length,
+    };
   }, [data, kpiMonth]);
 
   /* Available months for selector (from data) */
@@ -368,10 +390,14 @@ export default function OKR() {
   /* ═══ KPI definitions per owner ═══ */
   const kpis = useMemo(() => {
     const a = actuals;
+    /* src: 'auto' = computed live from shipment data · 'manual' = entered/static (no shipment source yet)
+       n = number of shipment records backing an auto KPI (so the number is verifiable) */
+    const otifPlatforms = ['Blinkit','Zepto','Swiggy','Amazon','Big Basket'];
+    const channelPlatforms = ['Blinkit','Swiggy','Amazon','Flipkart','Big Basket'];
     const defs = {
       sandeep: [
-        { name: 'Overall Cost %', w: 50, actual: a.costPct, target: 5.9, base: 6.7, high: 5.25, exc: 4.7, unit: '%', inv: true },
-        { name: 'In-Transit Aging', w: 8, actual: a.agePcts['0-7'], target: 85, base: 75, high: 90, exc: 95, unit: '%',
+        { name: 'Overall Cost %', w: 50, actual: a.costRowsCount > 0 ? a.costPct : null, target: 5.9, base: 6.7, high: 5.25, exc: 4.7, unit: '%', inv: true, src: 'auto', n: a.costRowsCount, basis: 'cost & invoice rows' },
+        { name: 'In-Transit Aging', w: 8, actual: a.intransit > 0 ? a.agePcts['0-7'] : null, target: 85, base: 75, high: 90, exc: 95, unit: '%', src: 'auto', n: a.intransit, basis: 'in-transit shipments',
           sub: [
             { label: '0-7 Days', value: a.agePcts['0-7'], target: 85, good: true },
             { label: '8-15 Days', value: a.agePcts['8-15'], target: 13, good: false },
@@ -379,42 +405,30 @@ export default function OKR() {
             { label: '21-30 Days', value: a.agePcts['21-30'], target: 1, good: false },
             { label: '30+ Days', value: a.agePcts['30+'], target: 0, good: false },
           ]},
-        { name: 'Platform OTIF', w: 9, actual: Math.round(((a.platDel['Blinkit']||0)+(a.platDel['Zepto']||0)+(a.platDel['Swiggy']||0)+(a.platDel['Amazon']||0)+(a.platDel['Big Basket']||0))/5*10)/10, target: 85, base: 65, high: 90, exc: 95, unit: '%',
-          sub: [
-            { label: 'Blinkit', value: a.platDel['Blinkit'], target: 85, good: true },
-            { label: 'Zepto', value: a.platDel['Zepto'], target: 80, good: true },
-            { label: 'Swiggy', value: a.platDel['Swiggy'], target: 85, good: true },
-            { label: 'Amazon', value: a.platDel['Amazon'], target: 85, good: true },
-            { label: 'Big Basket', value: a.platDel['Big Basket'], target: 80, good: true },
-          ]},
-        { name: 'Delivery Success %', w: 10, actual: a.delPct, target: 96, base: 90, high: 98, exc: 99, unit: '%' },
+        { name: 'Platform OTIF', w: 9, actual: a.avgPlatDel(otifPlatforms), target: 85, base: 65, high: 90, exc: 95, unit: '%', src: 'auto', n: a.platDataCount(otifPlatforms), basis: 'platform shipments (data-present only)',
+          sub: otifPlatforms.map(pl => ({ label: pl, value: a.platDel[pl], target: pl === 'Zepto' || pl === 'Big Basket' ? 80 : 85, good: true, n: a.platDelCount[pl] })) },
+        { name: 'Delivery Success %', w: 10, actual: a.total > 0 ? a.delPct : null, target: 96, base: 90, high: 98, exc: 99, unit: '%', src: 'auto', n: a.total, basis: 'all shipments' },
       ],
       prashant: [
-        { name: 'Channel Delivery', w: 15, actual: Math.round(((a.platDel['Blinkit']||0)+(a.platDel['Swiggy']||0)+(a.platDel['Amazon']||0))/3*10)/10, target: 95, base: 90, high: 97, exc: 99, unit: '%',
-          sub: [
-            { label: 'Blinkit', value: a.platDel['Blinkit'], target: 95, good: true },
-            { label: 'Swiggy', value: a.platDel['Swiggy'], target: 94, good: true },
-            { label: 'Amazon', value: a.platDel['Amazon'], target: 96, good: true },
-            { label: 'Flipkart', value: a.platDel['Flipkart'], target: 90, good: true },
-            { label: 'Big Basket', value: a.platDel['Big Basket'], target: 95, good: true },
-          ]},
-        { name: 'First Attempt Del %', w: 10, actual: Math.min(a.delPct, 85), target: 85, base: 80, high: 90, exc: 95, unit: '%' },
-        { name: 'B2B RTO Tracking', w: 15, actual: a.rtoPct, target: 5, base: 8, high: 3, exc: 2, unit: '%', inv: true,
+        { name: 'Channel Delivery', w: 15, actual: a.avgPlatDel(channelPlatforms), target: 95, base: 90, high: 97, exc: 99, unit: '%', src: 'auto', n: a.platDataCount(channelPlatforms), basis: 'channel platform shipments',
+          sub: channelPlatforms.map(pl => ({ label: pl, value: a.platDel[pl], target: pl === 'Flipkart' ? 90 : 95, good: true, n: a.platDelCount[pl] })) },
+        { name: 'First Attempt Del %', w: 10, actual: a.total > 0 ? a.delPct : null, target: 85, base: 80, high: 90, exc: 95, unit: '%', src: 'proxy', n: a.total, basis: 'delivery % used as proxy — true first-attempt not tracked' },
+        { name: 'B2B RTO Tracking', w: 15, actual: a.total > 0 ? a.rtoPct : null, target: 5, base: 8, high: 3, exc: 2, unit: '%', inv: true, src: 'auto', n: a.total, basis: 'all shipments',
           sub: [
             { label: 'Overall RTO %', value: a.rtoPct, target: 5, good: false },
-            { label: 'Blinkit RTO', value: a.platRTO['Blinkit'], target: 4, good: false },
-            { label: 'Zepto RTO', value: a.platRTO['Zepto'], target: 5, good: false },
-            { label: 'Swiggy RTO', value: a.platRTO['Swiggy'], target: 5, good: false },
-            { label: 'Amazon RTO', value: a.platRTO['Amazon'], target: 3, good: false },
+            { label: 'Blinkit RTO', value: a.platRTO['Blinkit'], target: 4, good: false, n: a.platDelCount['Blinkit'] },
+            { label: 'Zepto RTO', value: a.platRTO['Zepto'], target: 5, good: false, n: a.platDelCount['Zepto'] },
+            { label: 'Swiggy RTO', value: a.platRTO['Swiggy'], target: 5, good: false, n: a.platDelCount['Swiggy'] },
+            { label: 'Amazon RTO', value: a.platRTO['Amazon'], target: 3, good: false, n: a.platDelCount['Amazon'] },
           ]},
-        { name: 'RTO Ageing Control', w: 10, actual: a.rtoAgePcts['0-7'], target: 80, base: 70, high: 90, exc: 95, unit: '%',
+        { name: 'RTO Ageing Control', w: 10, actual: a.rto > 0 ? a.rtoAgePcts['0-7'] : null, target: 80, base: 70, high: 90, exc: 95, unit: '%', src: 'auto', n: a.rto, basis: 'RTO shipments',
           sub: [
             { label: 'RTO 0-7 Days', value: a.rtoAgePcts['0-7'], target: 80, good: true },
             { label: 'RTO 8-15 Days', value: a.rtoAgePcts['8-15'], target: 15, good: false },
             { label: 'RTO 16-30 Days', value: a.rtoAgePcts['16-30'], target: 5, good: false },
             { label: 'RTO 30+ Days', value: a.rtoAgePcts['30+'], target: 0, good: false },
           ]},
-        { name: 'Non-Appointment %', w: 15, actual: a.apptPct, target: 90, base: 84, high: 95, exc: 100, unit: '%',
+        { name: 'Non-Appointment %', w: 15, actual: a.apptDenom > 0 ? a.apptPct : null, target: 90, base: 84, high: 95, exc: 100, unit: '%', src: 'auto', n: a.apptDenom, basis: 'in-transit shipments',
           sub: [
             { label: 'Appt Booked', value: a.apptPct, target: 90, good: true },
             { label: 'No Appt (0-2d)', value: a.noApptPcts['0-2'], target: 90, good: true },
@@ -423,44 +437,24 @@ export default function OKR() {
             { label: 'No Appt (11-15d)', value: a.noApptPcts['11-15'], target: 0, good: false },
             { label: 'No Appt (15+d)', value: a.noApptPcts['15+'], target: 0, good: false },
           ]},
-        { name: 'Non-Appt 0-2 Days %', w: 3, actual: a.noApptPcts['0-2'], target: 90, base: 84, high: 95, exc: 100, unit: '%' },
+        { name: 'Non-Appt 0-2 Days %', w: 3, actual: a.apptDenom > 0 ? a.noApptPcts['0-2'] : null, target: 90, base: 84, high: 95, exc: 100, unit: '%', src: 'auto', n: a.apptDenom, basis: 'in-transit shipments' },
       ],
       nandlal: [
-        { name: 'GRN Recovery %', w: 35, actual: 90, target: 93, base: 90, high: 97, exc: 100, unit: '%' },
-        { name: 'POD Visibility', w: 5, actual: a.podPct, target: 90, base: 80, high: 96, exc: 100, unit: '%' },
-        { name: 'POD Ageing', w: 15, actual: a.podPct > 80 ? 80 : a.podPct, target: 90, base: 80, high: 96, exc: 100, unit: '%',
+        { name: 'GRN Recovery %', w: 35, actual: null, target: 93, base: 90, high: 97, exc: 100, unit: '%', src: 'manual', basis: 'GRN tracked outside shipment data — enter in Monthly Tracking' },
+        { name: 'POD Visibility', w: 5, actual: a.podDenom > 0 ? a.podPct : null, target: 90, base: 80, high: 96, exc: 100, unit: '%', src: 'auto', n: a.podDenom, basis: 'delivered shipments' },
+        { name: 'POD Ageing', w: 15, actual: a.podDenom > 0 ? a.podPct : null, target: 90, base: 80, high: 96, exc: 100, unit: '%', src: 'auto', n: a.podDenom, basis: 'delivered shipments (POD upload rate)',
           sub: [
-            { label: '0-7 Days', value: a.podPct > 80 ? 80 : a.podPct, target: 90, good: true },
-            { label: '7+ Days', value: a.podPct > 80 ? 20 : (100 - a.podPct), target: 10, good: false },
+            { label: 'With POD', value: a.podPct, target: 90, good: true },
+            { label: 'POD Pending', value: a.podDenom > 0 ? (100 - a.podPct) : null, target: 10, good: false },
           ]},
-        { name: 'GRN Ageing', w: 15, actual: 94, target: 96, base: 94, high: 100, exc: 100, unit: '%',
-          sub: [
-            { label: '0-1 Days', value: 94, target: 96, good: true },
-            { label: '2-3 Days', value: 5, target: 2, good: false },
-            { label: '4-5 Days', value: 1, target: 0, good: false },
-          ]},
-        { name: 'Platform GRN', w: 12, actual: 98.3, target: 99, base: 98, high: 99.5, exc: 100, unit: '%',
-          sub: [
-            { label: 'Blinkit', value: 98.5, target: 99, good: true },
-            { label: 'Zepto', value: 98, target: 99, good: true },
-            { label: 'Swiggy', value: 98, target: 99, good: true },
-            { label: 'Amazon', value: 98, target: 99, good: true },
-          ]},
+        { name: 'GRN Ageing', w: 15, actual: null, target: 96, base: 94, high: 100, exc: 100, unit: '%', src: 'manual', basis: 'GRN ageing tracked outside shipment data' },
+        { name: 'Platform GRN', w: 12, actual: null, target: 99, base: 98, high: 99.5, exc: 100, unit: '%', src: 'manual', basis: 'platform GRN tracked outside shipment data' },
       ],
       anoop: [
-        { name: 'Doc Issues %', w: 10, actual: 98, target: 98.5, base: 98, high: 99, exc: 100, unit: '%' },
-        { name: 'Dispatch & Pickup', w: 55, actual: 90, target: 93, base: 88, high: 96, exc: 99, unit: '%',
-          sub: [
-            { label: 'Same Day Dispatch', value: 92, target: 95, good: true },
-            { label: 'Pickup Compliance', value: 88, target: 90, good: true },
-          ]},
-        { name: 'Quality Control', w: 30, actual: 91, target: 94, base: 90, high: 97, exc: 100, unit: '%',
-          sub: [
-            { label: 'Packaging Quality', value: 96, target: 95, good: true },
-            { label: 'Label Accuracy', value: 99, target: 98, good: true },
-            { label: 'WH Capacity', value: 78, target: 80, good: true },
-          ]},
-        { name: 'WH Capacity Utilization', w: 15, actual: 78, target: 80, base: 70, high: 85, exc: 90, unit: '%' },
+        { name: 'Doc Issues %', w: 10, actual: null, target: 98.5, base: 98, high: 99, exc: 100, unit: '%', src: 'manual', basis: 'documentation KPI — manual entry' },
+        { name: 'Dispatch & Pickup', w: 55, actual: null, target: 93, base: 88, high: 96, exc: 99, unit: '%', src: 'manual', basis: 'dispatch/pickup compliance — manual entry' },
+        { name: 'Quality Control', w: 30, actual: null, target: 94, base: 90, high: 97, exc: 100, unit: '%', src: 'manual', basis: 'quality KPI — manual entry' },
+        { name: 'WH Capacity Utilization', w: 15, actual: null, target: 80, base: 70, high: 85, exc: 90, unit: '%', src: 'manual', basis: 'warehouse capacity — manual entry' },
       ],
     };
     if (owner === 'all') {
@@ -494,7 +488,7 @@ export default function OKR() {
       ownerKpis.forEach(k => { const s = scorePct(k.actual, k.target, k.base, k.exc, k.inv); tw += k.w; ws += s * k.w / 100; });
       const score = tw > 0 ? Math.round(ws / tw * 100) : 0;
       const info = KPI_OWNERS.find(o => o.key === oKey);
-      const atRisk = ownerKpis.filter(k => { const gap = k.inv ? k.actual - k.target : k.target - k.actual; return gap > 0; }).length;
+      const atRisk = ownerKpis.filter(k => { const gap = kpiGap(k); return gap != null && gap > 0; }).length;
       return { key: oKey, name: info?.name || oKey, role: info?.role || '', score, grade: getGrade(score), kpiCount: ownerKpis.length, atRisk };
     });
   }, [owner, kpis]);
@@ -504,8 +498,8 @@ export default function OKR() {
   const rootCauses = useMemo(() => {
     const causes = [];
     kpis.forEach(k => {
-      const gap = k.inv ? k.actual - k.target : k.target - k.actual;
-      if (gap > 0) {
+      const gap = kpiGap(k);
+      if (gap != null && gap > 0) {
         let reason = '', action = '', impact = '';
         if (k.name.includes('Cost')) { reason = 'High RTO rate + courier pricing'; action = 'Negotiate courier contracts, reduce RTO'; impact = `Reducing cost by ${fmt(gap)}pp saves ~${currency(actuals.total * gap / 100 * 50)}`; }
         else if (k.name.toLowerCase().includes('transit')) { reason = 'Courier delay + appointment pending'; action = 'Escalate aged shipments, auto-reschedule appointments'; impact = `${fmt(gap)}pp improvement needed`; }
@@ -614,6 +608,21 @@ export default function OKR() {
 
       {/* ═══ EXECUTIVE SUMMARY ═══ */}
       {view === 'executive' && (<div className="space-y-4">
+        {/* Data confidence legend — explains where every number comes from */}
+        {(() => {
+          const autoCount = kpis.filter(k => k.src === 'auto').length;
+          const proxyCount = kpis.filter(k => k.src === 'proxy').length;
+          const manualCount = kpis.filter(k => k.src === 'manual').length;
+          return (
+            <div className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 flex items-center gap-4 flex-wrap text-[10px]">
+              <span className="font-bold text-slate-700 uppercase tracking-wider">Data Confidence</span>
+              <span className="flex items-center gap-1.5"><span className="text-[8px] font-bold px-1 py-0.5 rounded bg-emerald-100 text-emerald-700">AUTO</span> <span className="text-gray-600">{autoCount} KPIs computed live from shipment data{kpiMonth !== 'rolling' ? ` (${kpiMonth})` : ' (12-mo)'}</span></span>
+              {proxyCount > 0 && <span className="flex items-center gap-1.5"><span className="text-[8px] font-bold px-1 py-0.5 rounded bg-amber-100 text-amber-700">PROXY</span> <span className="text-gray-600">{proxyCount} estimated</span></span>}
+              <span className="flex items-center gap-1.5"><span className="text-[8px] font-bold px-1 py-0.5 rounded bg-gray-200 text-gray-600">MANUAL</span> <span className="text-gray-600">{manualCount} need entry in Monthly Tracking (no shipment source)</span></span>
+              <span className="text-gray-400 ml-auto">Hover any badge to see the record count behind it.</span>
+            </div>
+          );
+        })()}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <KPICard title="KPI Score" value={overallScore} icon={Target} color={overallScore >= 80 ? 'green' : overallScore >= 60 ? 'yellow' : 'red'} subtitle={grade.label} />
           <KPICard title="KPIs at Risk" value={rootCauses.length} icon={AlertTriangle} color="red" subtitle={`of ${kpis.length} total`} />
@@ -629,8 +638,8 @@ export default function OKR() {
                 const oKpis = kpis.filter(k => k._owner === oKey);
                 const oInfo = KPI_OWNERS.find(o => o.key === oKey);
                 const oScore = allOwnerScores.find(s => s.key === oKey);
-                /* Score each KPI for ranking */
-                const ranked = oKpis.map(k => ({ k, s: scorePct(k.actual, k.target, k.base, k.exc, k.inv), gap: k.inv ? k.actual - k.target : k.target - k.actual })).sort((a, b) => b.s - a.s);
+                /* Score each KPI for ranking — only KPIs with live data (gap != null) qualify for best/worst */
+                const ranked = oKpis.map(k => ({ k, s: scorePct(k.actual, k.target, k.base, k.exc, k.inv), gap: kpiGap(k) })).filter(x => x.gap != null).sort((a, b) => b.s - a.s);
                 const best = ranked[0];
                 const worst = ranked[ranked.length - 1];
                 return (
@@ -687,19 +696,20 @@ export default function OKR() {
                     </div>
                     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
                       {ownerKpis.map(k => {
+                        const hasData = k.actual != null && isFinite(k.actual);
                         const s = scorePct(k.actual, k.target, k.base, k.exc, k.inv);
-                        const g = getGrade(s);
-                        const gap = k.inv ? k.actual - k.target : k.target - k.actual;
-                        const isBelow = gap > 0;
+                        const g = hasData ? getGrade(s) : { label: '—', color: 'text-gray-400 bg-gray-50 border-gray-200', bar: 'bg-gray-300' };
+                        const gap = kpiGap(k);
+                        const isBelow = gap != null && gap > 0;
                         return (
                           <div key={k.name} className={`p-2.5 rounded-xl border ${g.color} text-left`}>
-                            <p className="text-[10px] font-semibold truncate">{k.name}</p>
+                            <div className="flex items-center justify-between"><p className="text-[10px] font-semibold truncate">{k.name}</p><SrcBadge src={k.src} /></div>
                             <div className="flex items-end justify-between mt-1">
-                              <p className="text-base font-bold">{fmt(k.actual)}{k.unit}</p>
+                              <p className="text-base font-bold">{hasData ? `${fmt(k.actual)}${k.unit}` : '—'}</p>
                               <span className="text-[9px] font-bold">{g.label}</span>
                             </div>
-                            <div className="w-full h-1.5 bg-gray-200 rounded-full mt-1 overflow-hidden"><div className={`h-full rounded-full ${g.bar}`} style={{ width: `${Math.min(100, s)}%` }} /></div>
-                            <p className="text-[9px] text-gray-500 mt-1">T: {fmt(k.target)}{k.unit} {isBelow ? <span className="text-red-500">({k.inv?'+':'-'}{fmt(gap)}{k.unit})</span> : <span className="text-emerald-500">Met</span>}</p>
+                            <div className="w-full h-1.5 bg-gray-200 rounded-full mt-1 overflow-hidden"><div className={`h-full rounded-full ${g.bar}`} style={{ width: `${hasData ? Math.min(100, s) : 0}%` }} /></div>
+                            <p className="text-[9px] text-gray-500 mt-1">T: {fmt(k.target)}{k.unit} {!hasData ? <span className="text-gray-400">{k.src === 'manual' ? 'Enter in Tracking' : 'No data'}</span> : isBelow ? <span className="text-red-500">({k.inv?'+':'-'}{fmt(gap)}{k.unit})</span> : <span className="text-emerald-500">Met</span>}</p>
                           </div>
                         );
                       })}
@@ -711,29 +721,31 @@ export default function OKR() {
           ) : (
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
             {kpis.map(k => {
+              const hasData = k.actual != null && isFinite(k.actual);
               const s = scorePct(k.actual, k.target, k.base, k.exc, k.inv);
-              const g = getGrade(s);
-              const gap = k.inv ? k.actual - k.target : k.target - k.actual;
-              const isBelow = gap > 0;
+              const g = hasData ? getGrade(s) : { label: '—', color: 'text-gray-400 bg-gray-50 border-gray-200', bar: 'bg-gray-300' };
+              const gap = kpiGap(k);
+              const isBelow = gap != null && gap > 0;
               const isOpen = expKPI === k.name;
               return (
                 <button key={k.name} onClick={() => setExpKPI(isOpen ? null : k.name)} className={`p-3 rounded-xl border ${g.color} transition-all text-left hover:shadow-md ${isOpen ? 'ring-2 ring-indigo-400' : ''}`}>
-                  <p className="text-[10px] font-semibold truncate">{k.name}</p>
+                  <div className="flex items-center justify-between"><p className="text-[10px] font-semibold truncate">{k.name}</p><SrcBadge src={k.src} n={k.n} /></div>
                   <div className="flex items-end justify-between mt-1">
-                    <p className="text-lg font-bold">{fmt(k.actual)}{k.unit}</p>
+                    <p className="text-lg font-bold">{hasData ? `${fmt(k.actual)}${k.unit}` : '—'}</p>
                     <span className="text-[9px] font-bold">{g.label}</span>
                   </div>
-                  <div className="w-full h-1.5 bg-gray-200 rounded-full mt-1.5 overflow-hidden"><div className={`h-full rounded-full ${g.bar}`} style={{ width: `${Math.min(100, s)}%` }} /></div>
-                  <p className="text-[9px] text-gray-500 mt-1">Target: {fmt(k.target)}{k.unit} {isBelow ? <span className="text-red-500">({k.inv ? '+' : '-'}{fmt(gap)}{k.unit})</span> : <span className="text-emerald-500">Met</span>}</p>
+                  <div className="w-full h-1.5 bg-gray-200 rounded-full mt-1.5 overflow-hidden"><div className={`h-full rounded-full ${g.bar}`} style={{ width: `${hasData ? Math.min(100, s) : 0}%` }} /></div>
+                  <p className="text-[9px] text-gray-500 mt-1">Target: {fmt(k.target)}{k.unit} {!hasData ? <span className="text-gray-400">{k.src === 'manual' ? 'Enter in Tracking' : 'No data'}</span> : isBelow ? <span className="text-red-500">({k.inv ? '+' : '-'}{fmt(gap)}{k.unit})</span> : <span className="text-emerald-500">Met</span>}</p>
                   {/* Sub-KPI breakdown */}
                   {k.sub && (
                     <div className="mt-2 pt-2 border-t border-gray-200/50 space-y-1">
                       {k.sub.map(s => {
+                        const sHas = s.value != null && isFinite(s.value);
                         const sGap = s.good ? s.target - s.value : s.value - s.target;
                         const sOk = sGap <= 0;
                         return <div key={s.label} className="flex items-center justify-between text-[9px]">
-                          <span className="text-gray-500">{s.label}</span>
-                          <span className={`font-semibold ${sOk ? 'text-emerald-600' : 'text-red-500'}`}>{fmt(s.value)}%</span>
+                          <span className="text-gray-500">{s.label}{s.n != null ? <span className="text-gray-300"> ({s.n})</span> : ''}</span>
+                          <span className={`font-semibold ${!sHas ? 'text-gray-300' : sOk ? 'text-emerald-600' : 'text-red-500'}`}>{sHas ? `${fmt(s.value)}%` : '—'}</span>
                         </div>;
                       })}
                     </div>
@@ -748,7 +760,8 @@ export default function OKR() {
           {expKPI && (() => {
             const k = kpis.find(x => x.name === expKPI);
             if (!k) return null;
-            const gap = k.inv ? k.actual - k.target : k.target - k.actual;
+            const gap = kpiGap(k);
+            if (gap == null) return <div className="bg-gray-50 border border-gray-200 rounded-xl p-4"><p className="text-[11px] text-gray-600 font-semibold flex items-center gap-2"><AlertTriangle className="w-4 h-4" /> {k.name} has no live data{k.src === 'manual' ? ' — enter the value in Monthly Tracking to track it.' : ' for the selected month.'}</p></div>;
             if (gap <= 0) return <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4"><p className="text-[11px] text-emerald-700 font-semibold flex items-center gap-2"><CheckCircle className="w-4 h-4" /> {k.name} is on target. No action required.</p></div>;
             const actionPlan = getActionPlanFor(k, cur?.name);
             return (
@@ -894,11 +907,17 @@ export default function OKR() {
               <th className="px-3 py-2 text-right font-semibold text-emerald-600 uppercase">High</th>
               <th className="px-3 py-2 text-right font-semibold text-purple-600 uppercase">Exceptional</th>
               <th className="px-3 py-2 text-right font-semibold text-indigo-600 uppercase">Actual</th>
+              <th className="px-3 py-2 text-center font-semibold text-gray-500 uppercase">Source</th>
               <th className="px-3 py-2 text-center font-semibold text-gray-500 uppercase">Grade</th>
               <th className="px-3 py-2 text-right font-semibold text-gray-500 uppercase">Gap</th>
             </tr></thead>
             <tbody className="divide-y divide-gray-50">
-              {kpis.map((k, i) => { const s = scorePct(k.actual, k.target, k.base, k.exc, k.inv); const g = getGrade(s); const gap = k.inv ? k.actual - k.target : k.target - k.actual; return (
+              {kpis.map((k, i) => {
+                const hasData = k.actual != null && isFinite(k.actual);
+                const s = scorePct(k.actual, k.target, k.base, k.exc, k.inv);
+                const g = hasData ? getGrade(s) : { label: '—', color: 'text-gray-400 bg-gray-50 border-gray-200' };
+                const gap = kpiGap(k);
+                return (
                 <tr key={i} className="hover:bg-gray-50">
                   {owner === 'all' && <td className="px-3 py-2 text-[10px] font-medium text-indigo-600">{k._ownerName}</td>}
                   <td className="px-3 py-2 font-semibold text-gray-800">{k.name}</td>
@@ -907,9 +926,10 @@ export default function OKR() {
                   <td className="px-3 py-2 text-right text-blue-600 font-medium">{fmt(k.target)}{k.unit}</td>
                   <td className="px-3 py-2 text-right text-emerald-600">{fmt(k.high)}{k.unit}</td>
                   <td className="px-3 py-2 text-right text-purple-600">{fmt(k.exc)}{k.unit}</td>
-                  <td className="px-3 py-2 text-right font-bold text-indigo-700">{fmt(k.actual)}{k.unit}</td>
+                  <td className="px-3 py-2 text-right font-bold text-indigo-700">{hasData ? `${fmt(k.actual)}${k.unit}` : <span className="text-gray-300">—</span>}</td>
+                  <td className="px-3 py-2 text-center"><SrcBadge src={k.src} n={k.n} /></td>
                   <td className="px-3 py-2 text-center"><span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${g.color}`}>{g.label}</span></td>
-                  <td className="px-3 py-2 text-right">{gap > 0 ? <span className="text-red-500 font-semibold">{k.inv ? '+' : '-'}{fmt(gap)}{k.unit}</span> : <span className="text-emerald-500">&#10003;</span>}</td>
+                  <td className="px-3 py-2 text-right">{gap == null ? <span className="text-gray-300">—</span> : gap > 0 ? <span className="text-red-500 font-semibold">{k.inv ? '+' : '-'}{fmt(gap)}{k.unit}</span> : <span className="text-emerald-500">&#10003;</span>}</td>
                 </tr>
               ); })}
             </tbody>
@@ -1016,25 +1036,21 @@ export default function OKR() {
           /* RTO % (for all owners) */
           autoActuals[m]['RTO %'] = total > 0 ? parseFloat(percent(rto.length, total).toFixed(1)) : null;
           /* Auto-feed ALL KPIs */
+          /* Average platform delivery % over only platforms that have data this month (avoids divide-by-N understatement) */
+          const avgPlat = (list) => { const vals = list.map(pl => pDel[pl]).filter(v => v != null); return vals.length ? parseFloat((vals.reduce((s, v) => s + v, 0) / vals.length).toFixed(1)) : null; };
           autoActuals[m]["Overall Cost %"] = tInv > 0 ? parseFloat((tCost / tInv * 100).toFixed(1)) : null;
           autoActuals[m]["Delivery Success %"] = total > 0 ? parseFloat(percent(del.length, total).toFixed(1)) : null;
+          autoActuals[m]["First Attempt Del %"] = total > 0 ? parseFloat(percent(del.length, total).toFixed(1)) : null;
           autoActuals[m]["POD Visibility"] = del.length > 0 ? parseFloat(percent(withPod, del.length).toFixed(1)) : null;
-          autoActuals[m]["Platform OTIF"] = total > 0 ? parseFloat((((pDel["Blinkit"]||0)+(pDel["Zepto"]||0)+(pDel["Swiggy"]||0)+(pDel["Amazon"]||0)+(pDel["Big Basket"]||0))/5).toFixed(1)) : null;
-          autoActuals[m]["Channel Delivery"] = total > 0 ? parseFloat((((pDel["Blinkit"]||0)+(pDel["Swiggy"]||0)+(pDel["Amazon"]||0))/3).toFixed(1)) : null;
+          autoActuals[m]["POD Ageing"] = del.length > 0 ? parseFloat(percent(withPod, del.length).toFixed(1)) : null;
+          autoActuals[m]["Platform OTIF"] = avgPlat(["Blinkit","Zepto","Swiggy","Amazon","Big Basket"]);
+          autoActuals[m]["Channel Delivery"] = avgPlat(["Blinkit","Swiggy","Amazon","Flipkart","Big Basket"]);
           autoActuals[m]["B2B RTO Tracking"] = total > 0 ? parseFloat(percent(rto.length, total).toFixed(1)) : null;
           var rtoAgeB2 = {"0-7":0,"8-15":0,"16-30":0,"30+":0}; rto.forEach(function(r2){var bd2=safeParseDate(r2.bookingDate);if(bd2){var ag2=Math.floor((refDate-bd2)/86400000);if(ag2<=7)rtoAgeB2["0-7"]++;else if(ag2<=15)rtoAgeB2["8-15"]++;else if(ag2<=30)rtoAgeB2["16-30"]++;else rtoAgeB2["30+"]++;}});
           autoActuals[m]["RTO Ageing Control"] = rto.length > 0 ? parseFloat(percent(rtoAgeB2["0-7"], rto.length).toFixed(1)) : null;
-          autoActuals[m]["Doc Issues %"] = 98;
-          autoActuals[m]["GRN Recovery %"] = 90;
-          autoActuals[m]["GRN Ageing 0-1 Days"] = 94;
-          autoActuals[m]["POD 0-7 Days %"] = del.length > 0 ? parseFloat(percent(withPod, del.length).toFixed(1)) : null;
-          autoActuals[m]["Same Day Dispatch %"] = 92;
-          autoActuals[m]["Pickup Compliance %"] = 88;
-          autoActuals[m]["Packaging Quality %"] = 96;
-          autoActuals[m]["Label Accuracy %"] = 99;
-          autoActuals[m]["WH Capacity Utilization"] = 78;
-          autoActuals[m]["Platform GRN — Blinkit"] = 98.5;
-          autoActuals[m]["Platform GRN — Zepto"] = 98;
+          /* NOTE: GRN Recovery %, GRN Ageing, Platform GRN, Doc Issues %, Dispatch & Pickup, Quality Control,
+             WH Capacity Utilization are MANUAL KPIs (no shipment-data source). They are intentionally left
+             blank here so the user enters verified values — we no longer auto-fill fake placeholders. */
         });
 
         /* expTrackMonth state is at component top level */
@@ -1044,7 +1060,7 @@ export default function OKR() {
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-100">
             <h3 className="text-sm font-semibold text-gray-700">{period} Tracking — {owner === 'all' ? 'All Owners' : cur?.name}</h3>
-            <p className="text-[10px] text-gray-400">Auto-filled from shipment data. Edit if incorrect. Lock after verification.</p>
+            <p className="text-[10px] text-gray-400"><span className="text-[8px] font-bold px-1 py-0.5 rounded bg-emerald-100 text-emerald-700">AUTO</span> rows auto-fill from shipment data · <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-gray-200 text-gray-600">MANUAL</span> rows are blank until you enter verified values. Edit any cell, then lock the month.</p>
           </div>
           <div className="overflow-x-auto"><table className="w-full text-[10px]">
             <thead><tr className="bg-gray-50 border-b border-gray-200">
@@ -1091,7 +1107,7 @@ export default function OKR() {
                 return (
                 <tr key={ki} className="hover:bg-gray-50/50">
                   {owner === 'all' && <td className="px-2 py-1.5 text-[9px] font-medium text-indigo-600 border-r border-gray-100">{k._ownerName}</td>}
-                  <td className={`px-3 py-1.5 font-medium text-gray-700 ${owner === 'all' ? '' : 'sticky left-0 bg-white z-10'} border-r border-gray-100 text-[10px]`}>{k.name}</td>
+                  <td className={`px-3 py-1.5 font-medium text-gray-700 ${owner === 'all' ? '' : 'sticky left-0 bg-white z-10'} border-r border-gray-100 text-[10px]`}><span className="flex items-center gap-1.5"><span className="truncate">{k.name}</span><SrcBadge src={k.src} /></span></td>
                   <td className="px-2 py-1.5 text-center text-blue-600 font-semibold border-r border-blue-100 bg-blue-50/30">{fmt(k.target)}{k.unit}</td>
                   {trackCols.map(m => {
                     const trackOwner = owner === 'all' ? k._owner : owner;
@@ -1201,10 +1217,7 @@ export default function OKR() {
       {/* ═══ PLAN OF ACTION ═══ */}
       {view === 'poa' && (() => {
         /* All below-target KPIs (from current owner OR all) with full action plans */
-        const belowKpis = kpis.filter(k => {
-          const gap = k.inv ? k.actual - k.target : k.target - k.actual;
-          return gap > 0;
-        });
+        const belowKpis = kpis.filter(k => { const gap = kpiGap(k); return gap != null && gap > 0; });
         /* Aggregate by status for kanban headline */
         const allActions = [];
         belowKpis.forEach(k => {
@@ -1214,7 +1227,7 @@ export default function OKR() {
           plan.forEach((ap, idx) => {
             const id = `${ownerKey}||${poaMonth}||${k.name}||${idx}`;
             const st = poaState[id] || {};
-            allActions.push({ id, kpi: k.name, kpiOwner: ownerName, kpiOwnerKey: ownerKey, action: ap.action, plannedOwner: ap.owner, timeline: ap.timeline, impact: ap.impact, status: st.status || 'open', notes: st.notes || '', due: st.due || '', actual: k.actual, target: k.target, unit: k.unit, gap: k.inv ? k.actual - k.target : k.target - k.actual, inv: k.inv });
+            allActions.push({ id, kpi: k.name, kpiOwner: ownerName, kpiOwnerKey: ownerKey, action: ap.action, plannedOwner: ap.owner, timeline: ap.timeline, impact: ap.impact, status: st.status || 'open', notes: st.notes || '', due: st.due || '', actual: k.actual, target: k.target, unit: k.unit, gap: kpiGap(k), inv: k.inv });
           });
         });
         /* Apply filter */
@@ -1227,7 +1240,7 @@ export default function OKR() {
         const cnt = (s) => allActions.filter(a => a.status === s).length;
         const stOpen = cnt('open'), stIn = cnt('inprogress'), stDone = cnt('done'), stBlk = cnt('blocked');
         /* Estimated impact (rough) — sum of "potential pp gap closure" extracted from impact text */
-        const totalGapPP = belowKpis.reduce((s, k) => s + Math.abs(k.inv ? k.actual - k.target : k.target - k.actual), 0);
+        const totalGapPP = belowKpis.reduce((s, k) => { const g = kpiGap(k); return s + (g != null ? Math.abs(g) : 0); }, 0);
         /* Export PoA as CSV */
         const exportPoA = () => {
           const rows = [['Owner','KPI','Action','Planned Owner','Timeline','Status','Due','Notes','Impact']];
