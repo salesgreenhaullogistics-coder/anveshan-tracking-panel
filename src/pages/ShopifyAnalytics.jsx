@@ -32,7 +32,7 @@ export default function ShopifyAnalytics() {
   const [configured, setConfigured] = useState(true);
   const [lastSync, setLastSync] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [channelOnly, setChannelOnly] = useState(true);
+  const [channelFilter, setChannelFilter] = useState('all'); /* 'all' or a specific channel name */
   const [drill, setDrill] = useState(null);
 
   useEffect(() => {
@@ -81,7 +81,8 @@ export default function ShopifyAnalytics() {
     };
   }), [raw]);
 
-  const data = useMemo(() => channelOnly ? orders.filter(o => o.isShopify) : orders, [orders, channelOnly]);
+  const channels = useMemo(() => Array.from(new Set(orders.map(o => o.channel).filter(Boolean))).sort(), [orders]);
+  const data = useMemo(() => channelFilter === 'all' ? orders : orders.filter(o => o.channel === channelFilter), [orders, channelFilter]);
 
   const stats = useMemo(() => {
     const totalRevenue = data.reduce((s, o) => s + o.total, 0);
@@ -162,7 +163,11 @@ export default function ShopifyAnalytics() {
           <span className="text-[10px] text-gray-400">{data.length} orders</span>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => setChannelOnly(c => !c)} className={`text-[10px] px-2 py-1 rounded font-semibold border ${channelOnly ? 'bg-indigo-50 border-indigo-300 text-indigo-700' : 'bg-white border-gray-200 text-gray-500'}`}>{channelOnly ? 'Shopify only' : 'All channels'}</button>
+          <label className="text-[10px] text-gray-500 font-medium">Channel:</label>
+          <select value={channelFilter} onChange={e => setChannelFilter(e.target.value)} className="text-[10px] px-2 py-1 border border-indigo-200 rounded bg-white text-indigo-700 font-semibold">
+            <option value="all">All channels ({orders.length})</option>
+            {channels.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
           <button onClick={() => setRefreshKey(k => k + 1)} className="text-[11px] px-3 py-1.5 bg-indigo-600 text-white rounded-lg font-semibold flex items-center gap-1"><RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} /> Refresh</button>
         </div>
       </div>
