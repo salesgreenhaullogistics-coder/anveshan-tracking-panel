@@ -177,11 +177,26 @@ function grnFilterByMonth(rows, monthStr) {
     return d && d.getFullYear() === mYr && d.getMonth() === mIdx;
   });
 }
+/* "Claim received from logistics" = COF Issued OR Credit Note Issued (in either Claim Status or Claim Final Status) */
+const grnIsClaimReceived = (status, finalStatus) => {
+  const check = v => {
+    const s = String(v || '').toLowerCase();
+    return s.includes('cof issued') || s.includes('credit note issued');
+  };
+  return check(status) || check(finalStatus);
+};
 function computeGRNMetrics(rows, refDate) {
-  if (!rows || rows.length === 0) return { recoveryPct: null, ageingPct: null, platformPct: null, n: 0, openN: 0, dispatched: 0, grn: 0 };
+  if (!rows || rows.length === 0) return { recoveryPct: null, ageingPct: null, platformPct: null, n: 0, openN: 0, logisticsN: 0, logisticsDeficit: 0, logisticsRecovered: 0 };
+  /* GRN Recovery % — only Logistics-held claims; recovered = COF Issued + Credit Note Issued by deficit value */
+  const logisticsRows = rows.filter(r => String(r['Claim Holder'] || '').trim().toLowerCase() === 'logistics');
+  const logisticsDeficit = logisticsRows.reduce((s, r) => s + grnNum(r['Deficit Value']), 0);
+  const logisticsRecovered = logisticsRows
+    .filter(r => grnIsClaimReceived(r['Claim Status'], r['Claim Final Status']))
+    .reduce((s, r) => s + grnNum(r['Deficit Value']), 0);
+  const recoveryPct = logisticsDeficit > 0 ? parseFloat((logisticsRecovered / logisticsDeficit * 100).toFixed(1)) : null;
+  /* Keep dispatched/grnQty for downstream Platform GRN compute below */
   const dispatched = rows.reduce((s, r) => s + grnNum(r['Fulfilled/Dispatched Qty (in Units)']), 0);
   const grnQty = rows.reduce((s, r) => s + grnNum(r['GRN Qty (in Units)']), 0);
-  const recoveryPct = dispatched > 0 ? parseFloat((grnQty / dispatched * 100).toFixed(1)) : null;
   /* Ageing: % of open (non-recovered) claims aged 0–7 days from Claim Date */
   const ref = refDate || new Date();
   const open = rows.filter(r => grnIsOpen(r['Claim Status']) && !grnIsRecovered(r['Claim Status'], r['Claim Final Status']));
@@ -198,7 +213,7 @@ function computeGRNMetrics(rows, refDate) {
   });
   const platPcts = Object.values(byPlat).filter(p => p.disp > 0).map(p => p.grn / p.disp * 100);
   const platformPct = platPcts.length > 0 ? parseFloat((platPcts.reduce((a, b) => a + b, 0) / platPcts.length).toFixed(1)) : null;
-  return { recoveryPct, ageingPct, platformPct, n: rows.length, openN: open.length, dispatched, grn: grnQty };
+  return { recoveryPct, ageingPct, platformPct, n: rows.length, openN: open.length, logisticsN: logisticsRows.length, logisticsDeficit, logisticsRecovered, dispatched, grn: grnQty };
 }
 const PERIODS = ['Monthly','Quarterly','Yearly'];
 const fmt = v => v != null && isFinite(v) ? (Number.isInteger(v) ? String(v) : v.toFixed(1)) : '-';
@@ -445,7 +460,7 @@ export default function OKR() {
 
   /* ═══ GRN metrics scoped to kpiMonth (or full dataset for rolling) ═══ */
   const grnScoped = useMemo(() => {
-    if (!grnRaw || grnRaw.length === 0) return { recoveryPct: null, ageingPct: null, platformPct: null, n: 0, openN: 0 };
+    if (!grnRaw || grnRaw.length === 0) return { recoveryPct: null, ageingPct: null, platformPct: null, n: 0, openN: 0, logisticsN: 0 };
     const scopedRows = kpiMonth === 'rolling' ? grnRaw : grnFilterByMonth(grnRaw, kpiMonth);
     /* For past months, age claims relative to month end (matches Monthly Tracking ageing semantics) */
     let refDate = new Date();
@@ -513,8 +528,10 @@ export default function OKR() {
       ],
       nandlal: [
         { name: 'GRN Recovery %', w: 35, actual: g.recoveryPct, target: 93, base: 90, high: 97, exc: 100, unit: '%',
-          src: g.recoveryPct != null ? 'auto' : 'manual', n: g.n,
-          basis: g.recoveryPct != null ? 'Σ(GRN Qty) ÷ Σ(Dispatched Qty) × 100 — live from GRN Deficit Controller' : 'GRN data unavailable — enter manually' },
+          src: g.recoveryPct != null ? 'auto' : 'manual', n: g.logisticsN,
+          basis: g.recoveryPct != null
+            ? `Σ(Deficit ₹ where Claim Status/Final = COF Issued or Credit Note Issued) ÷ Σ(Deficit ₹ where Holder = Logistics) × 100 — ${g.logisticsN} logistics-held claims, ₹${Math.round(g.logisticsRecovered).toLocaleString('en-IN')} recovered of ₹${Math.round(g.logisticsDeficit).toLocaleString('en-IN')}`
+            : 'GRN data unavailable — enter manually' },
         { name: 'POD Visibility', w: 5, actual: a.podDenom > 0 ? a.podPct : null, target: 90, base: 80, high: 96, exc: 100, unit: '%', src: 'auto', n: a.podDenom, basis: 'delivered shipments' },
         { name: 'POD Ageing', w: 15, actual: a.podDenom > 0 ? a.podPct : null, target: 90, base: 80, high: 96, exc: 100, unit: '%', src: 'auto', n: a.podDenom, basis: 'delivered shipments (POD upload rate)',
           sub: [
