@@ -522,44 +522,50 @@ export default function OKR() {
       return { month, total: rows.length, delPct: percent(d, rows.length), rtoPct: percent(rt, rows.length) };
     });
 
-    /* ─── Anoop's First-Mile / Dispatch metrics — derived from shipment dates ─── */
-    const booked     = recent.filter(r => safeParseDate(r.bookingDate));
-    const dispatched = recent.filter(r => safeParseDate(r.bookingDate) && safeParseDate(r.dispatchDate || r.bookingDate));
-    /* "Dispatched" = has both booking + dispatch date (or, when dispatchDate column absent, any record that left the warehouse i.e. is no longer just-booked). */
-    const dispatchedReal = recent.filter(r => safeParseDate(r.dispatchDate)) ;
-    const bookedCount = booked.length;
-    const dispatchedCount = dispatchedReal.length || dispatched.length;
+    /* ─── Anoop's First-Mile / Dispatch metrics — derived from shipment fields available in this dataset ───
+       NOTE: this dataset has no explicit `dispatchDate` column. We use bookingDate as the dispatch
+       reference (in our pipeline, "booking" = shipment leaves the warehouse) and treat presence of
+       a valid AWB number as the signal that the courier has actually accepted/labelled the order. */
+    const hasAwb = (r) => r.awbNo && String(r.awbNo).trim() !== '' && String(r.awbNo).trim() !== '-';
+    const isPendingStatus = (s) => {
+      const v = String(s || '').toLowerCase().trim();
+      return v === '' || v === 'booked' || v === 'pending' || v.includes('not picked') || v.includes('pickup pending');
+    };
 
-    /* Dispatch ageing buckets: days from booking to dispatch (or booking to refDate if not yet dispatched) */
+    const booked = recent.filter(r => safeParseDate(r.bookingDate));
+    const dispatched = booked.filter(hasAwb);
+    const bookedCount = booked.length;
+    const dispatchedCount = dispatched.length;
+
+    /* Dispatch ageing buckets — days from booking to refDate (proxy for dispatch age since
+       dispatch date is not separately tracked in this dataset). */
     const dispatchAgeBkts = { '0-2': 0, '2-5': 0, '5-10': 0, '10-20': 0, '20+': 0 };
-    dispatchedReal.forEach(r => {
-      const bd = safeParseDate(r.bookingDate), dd = safeParseDate(r.dispatchDate);
-      if (!bd || !dd) return;
-      const age = Math.floor((dd - bd) / 86400000);
+    dispatched.forEach(r => {
+      const bd = safeParseDate(r.bookingDate);
+      if (!bd) return;
+      const age = Math.floor((refDate - bd) / 86400000);
       if (age <= 2) dispatchAgeBkts['0-2']++;
       else if (age <= 5) dispatchAgeBkts['2-5']++;
       else if (age <= 10) dispatchAgeBkts['5-10']++;
       else if (age <= 20) dispatchAgeBkts['10-20']++;
       else dispatchAgeBkts['20+']++;
     });
-    const dispAgeTotal = dispatchedReal.length || 1;
+    const dispAgeTotal = dispatchedCount || 1;
     const dispatchAgePcts = {};
     for (const [k, v] of Object.entries(dispatchAgeBkts)) dispatchAgePcts[k] = percent(v, dispAgeTotal);
 
-    /* Plan compliance proxy: dispatched within 0-2 days of booking */
-    const dispatchSameDay = dispatchedReal.filter(r => {
-      const bd = safeParseDate(r.bookingDate), dd = safeParseDate(r.dispatchDate);
-      if (!bd || !dd) return false;
-      return Math.floor((dd - bd) / 86400000) <= 2;
-    }).length;
-    const dispatchPlanPct = dispatchedReal.length > 0 ? percent(dispatchSameDay, dispatchedReal.length) : null;
+    /* Plan compliance proxy — % of booked orders moved out of "pending/booked" status
+       (i.e., the courier picked them up and they're in the pipeline). */
+    const inMotion = booked.filter(r => !isPendingStatus(r.status));
+    const dispatchPlanPct = bookedCount > 0 ? percent(inMotion.length, bookedCount) : null;
 
-    /* Courier dispatch coverage: of booked, how many actually dispatched (proxy for vehicle-plan-vs-placed across all couriers) */
+    /* Courier dispatch coverage — % of booked orders that have an AWB issued. */
     const dispatchCoveragePct = bookedCount > 0 ? percent(dispatchedCount, bookedCount) : null;
 
-    /* Proof of Dispatch: % of dispatched orders with both AWB no AND dispatch date populated */
-    const dispatchWithAwb = dispatchedReal.filter(r => r.awbNo && String(r.awbNo).trim() !== '' && String(r.awbNo).trim() !== '-').length;
-    const proofOfDispatchPct = dispatchedReal.length > 0 ? percent(dispatchWithAwb, dispatchedReal.length) : null;
+    /* Proof of Dispatch — % of dispatched orders that did NOT end up lost
+       (label/AWB present + reached the consumer pipeline = proof the dispatch worked). */
+    const proofOfDispatchOk = dispatched.filter(r => !isLost(r.status)).length;
+    const proofOfDispatchPct = dispatchedCount > 0 ? percent(proofOfDispatchOk, dispatchedCount) : null;
 
     /* Appointment coverage — overall + Zepto-specific (matches user's KPI sheet emphasis) */
     const apptCoveragePct = intransit.length > 0 ? percent(intransit.filter(r => safeParseDate(r.appointmentDate)).length, intransit.length) : null;
@@ -1458,23 +1464,31 @@ export default function OKR() {
             const fa = computeFilfloAgeing(monthFilflo, isCurrentMonth ? now : monthEnd);
             if (fa.ageingPct != null) autoActuals[m]['GRN Ageing'] = fa.ageingPct;
           }
-          /* ─── Anoop's First-Mile / Dispatch KPIs — shipment-level dates rolled up monthly ─── */
+          /* ─── Anoop's First-Mile / Dispatch KPIs — shipment-level fields rolled up monthly.
+             Uses awbNo presence as the "dispatched" signal (no separate dispatchDate column). */
+          const hasAwbM = (r) => r.awbNo && String(r.awbNo).trim() !== '' && String(r.awbNo).trim() !== '-';
+          const isPendingM = (s) => {
+            const v = String(s || '').toLowerCase().trim();
+            return v === '' || v === 'booked' || v === 'pending' || v.includes('not picked') || v.includes('pickup pending');
+          };
           const bookedM = rows.filter(r => safeParseDate(r.bookingDate));
-          const dispM   = rows.filter(r => safeParseDate(r.dispatchDate));
+          const dispatchedM = bookedM.filter(hasAwbM);
           const bookedCount = bookedM.length;
-          const dispCount   = dispM.length;
+          const dispCount = dispatchedM.length;
           if (bookedCount > 0) {
             autoActuals[m]['Courier Dispatch Coverage'] = parseFloat(percent(dispCount, bookedCount).toFixed(1));
+            const inMotionM = bookedM.filter(r => !isPendingM(r.status));
+            autoActuals[m]['Dispatch Plan Compliance'] = parseFloat(percent(inMotionM.length, bookedCount).toFixed(1));
           }
           if (dispCount > 0) {
-            const fast = dispM.filter(r => {
-              const bd = safeParseDate(r.bookingDate), dd = safeParseDate(r.dispatchDate);
-              return bd && dd && Math.floor((dd - bd) / 86400000) <= 2;
+            /* Fresh = booked within 0-2 days of monthEnd (for past months) or today (current) */
+            const fast = dispatchedM.filter(r => {
+              const bd = safeParseDate(r.bookingDate);
+              return bd && Math.floor((refDate - bd) / 86400000) <= 2;
             }).length;
-            autoActuals[m]['Dispatch Plan Compliance'] = parseFloat(percent(fast, dispCount).toFixed(1));
-            autoActuals[m]['Dispatch Ageing — Fresh']  = parseFloat(percent(fast, dispCount).toFixed(1));
-            const withAwb = dispM.filter(r => r.awbNo && String(r.awbNo).trim() !== '' && String(r.awbNo).trim() !== '-').length;
-            autoActuals[m]['Proof of Dispatch'] = parseFloat(percent(withAwb, dispCount).toFixed(1));
+            autoActuals[m]['Dispatch Ageing — Fresh'] = parseFloat(percent(fast, dispCount).toFixed(1));
+            const okPod = dispatchedM.filter(r => !isLost(r.status)).length;
+            autoActuals[m]['Proof of Dispatch'] = parseFloat(percent(okPod, dispCount).toFixed(1));
           }
           const intM = rows.filter(r => isInTransit(r.status) || isOFD(r.status));
           if (intM.length > 0) {
