@@ -653,17 +653,48 @@ export default function OKR() {
         { name: 'WH Capacity Utilization', w: 15, actual: null, target: 80, base: 70, high: 85, exc: 90, unit: '%', src: 'manual', basis: 'warehouse capacity — manual entry' },
       ],
     };
-    if (owner === 'all') {
-      /* Combine all owners' KPIs with owner tag */
-      const allKpis = [];
-      Object.entries(defs).forEach(([ownerKey, ownerKpis]) => {
-        const ownerInfo = KPI_OWNERS.find(o => o.key === ownerKey);
-        ownerKpis.forEach(k => allKpis.push({ ...k, _owner: ownerKey, _ownerName: ownerInfo?.name || ownerKey }));
-      });
-      return allKpis;
-    }
+    /* Build the full all-owners list once; either return it or slice to current owner */
+    const allKpisTagged = [];
+    Object.entries(defs).forEach(([ownerKey, ownerKpis]) => {
+      const ownerInfo = KPI_OWNERS.find(o => o.key === ownerKey);
+      ownerKpis.forEach(k => allKpisTagged.push({ ...k, _owner: ownerKey, _ownerName: ownerInfo?.name || ownerKey }));
+    });
+    if (owner === 'all') return allKpisTagged;
     return defs[owner] || [];
   }, [actuals, owner, grnScoped, filfloAgeingScoped]);
+
+  /* Full all-owners KPI list — used by 'Lock All' so the action freezes every owner's
+     values regardless of which owner tab is currently visible. */
+  const allOwnerKpis = useMemo(() => {
+    const a = actuals;
+    const g = grnScoped;
+    const otifPlatforms = ['Blinkit','Zepto','Swiggy','Amazon','Big Basket'];
+    const channelPlatforms = ['Blinkit','Swiggy','Amazon','Flipkart','Big Basket'];
+    const list = [];
+    const def = (ownerKey, items) => {
+      const info = KPI_OWNERS.find(o => o.key === ownerKey);
+      items.forEach(k => list.push({ ...k, _owner: ownerKey, _ownerName: info?.name || ownerKey }));
+    };
+    def('sandeep', [
+      { name: 'Overall Cost %', target: 5.9 }, { name: 'In-Transit Aging', target: 85 },
+      { name: 'Platform OTIF', target: 85 }, { name: 'Delivery Success %', target: 96 },
+    ]);
+    def('prashant', [
+      { name: 'Channel Delivery', target: 95 }, { name: 'First Attempt Del %', target: 85 },
+      { name: 'B2B RTO Tracking', target: 5 }, { name: 'RTO Ageing Control', target: 80 },
+      { name: 'Non-Appointment %', target: 90 }, { name: 'Non-Appt 0-2 Days %', target: 90 },
+    ]);
+    def('nandlal', [
+      { name: 'GRN Recovery %', target: 93 }, { name: 'POD Visibility', target: 90 },
+      { name: 'POD Ageing', target: 90 }, { name: 'GRN Ageing', target: 96 },
+      { name: 'Platform GRN', target: 99 },
+    ]);
+    def('anoop', [
+      { name: 'Doc Issues %', target: 98.5 }, { name: 'Dispatch & Pickup', target: 93 },
+      { name: 'Quality Control', target: 94 }, { name: 'WH Capacity Utilization', target: 80 },
+    ]);
+    return list;
+  }, [actuals, grnScoped]);
 
   /* ═══ Scores — computed ONLY from KPIs that have live data; weights renormalised.
      Manual / no-data KPIs are excluded so they don't inject a fake "50" into the score. */
@@ -1350,17 +1381,18 @@ export default function OKR() {
 
         /* expTrackMonth state is at component top level */
 
-        /* Snapshot every currently-visible AUTO cell into trackingData so the displayed numbers
-           are frozen — future live-data changes won't move them. Marks each touched month locked. */
+        /* Snapshot every AUTO cell across ALL OWNERS into trackingData so the displayed numbers
+           are frozen — future live-data changes won't move them. Marks each touched month locked.
+           Always scopes to every owner regardless of which owner tab is active. */
         const lockAllVisible = () => {
-          const ownerFilter = owner === 'all' ? null : owner;
           const newTrack = { ...trackingData };
           const newLocks = { ...lockedMonths };
           const monthsTouched = new Set();
           let frozenCount = 0;
-          kpis.forEach(k => {
-            const tO = owner === 'all' ? k._owner : owner;
-            if (ownerFilter && tO !== ownerFilter && owner !== 'all') return;
+          const ownersAffected = new Set();
+          allOwnerKpis.forEach(k => {
+            const tO = k._owner;
+            ownersAffected.add(tO);
             MONTHS_LIST.forEach(m => {
               const key = `${tO}||${m}||${k.name}`;
               const av = autoActuals[m]?.[k.name];
@@ -1380,18 +1412,18 @@ export default function OKR() {
           if (frozenCount === 0) {
             alert('Nothing to lock — all visible cells already have manual values or are empty.');
           } else {
-            alert(`Locked ${frozenCount} value${frozenCount === 1 ? '' : 's'} across ${monthsTouched.size} month-owner combinations. These numbers are now frozen and won't change when live data updates.`);
+            alert(`Locked ${frozenCount} value${frozenCount === 1 ? '' : 's'} across ${ownersAffected.size} owner${ownersAffected.size === 1 ? '' : 's'} (${Array.from(ownersAffected).map(o => KPI_OWNERS.find(x => x.key === o)?.name || o).join(', ')}) and ${monthsTouched.size} month-owner combinations. These numbers are now frozen across the entire OKR — switching owner tabs will show the same locked values.`);
           }
         };
 
-        /* Reverse: clear manual snapshots for the current owner scope so cells go back to live AUTO */
+        /* Reverse: clear all manual snapshots across every owner so cells go back to live AUTO */
         const unlockAllVisible = () => {
-          if (!confirm('Restore all locked cells back to live (auto) values? This will clear the frozen snapshots for the current owner view.')) return;
+          if (!confirm('Restore all locked cells across ALL OWNERS back to live (auto) values? This will clear the frozen snapshots everywhere.')) return;
           const newTrack = { ...trackingData };
           const newLocks = { ...lockedMonths };
           let cleared = 0;
-          kpis.forEach(k => {
-            const tO = owner === 'all' ? k._owner : owner;
+          allOwnerKpis.forEach(k => {
+            const tO = k._owner;
             MONTHS_LIST.forEach(m => {
               const key = `${tO}||${m}||${k.name}`;
               const av = autoActuals[m]?.[k.name];
@@ -1408,13 +1440,13 @@ export default function OKR() {
           setLockedMonths(newLocks);
           localStorage.setItem('okr-track', JSON.stringify(newTrack));
           localStorage.setItem('okr-lock', JSON.stringify(newLocks));
-          alert(`Cleared ${cleared} frozen snapshot${cleared === 1 ? '' : 's'}. Cells now reflect live data again.`);
+          alert(`Cleared ${cleared} frozen snapshot${cleared === 1 ? '' : 's'} across all owners. Cells now reflect live data again.`);
         };
 
-        const visibleLockedCount = kpis.reduce((acc, k) => {
-          const tO = owner === 'all' ? k._owner : owner;
+        /* Count frozen snapshots across ALL owners (not just current view) */
+        const visibleLockedCount = allOwnerKpis.reduce((acc, k) => {
           return acc + MONTHS_LIST.filter(m => {
-            const key = `${tO}||${m}||${k.name}`;
+            const key = `${k._owner}||${m}||${k.name}`;
             const av = autoActuals[m]?.[k.name];
             return trackingData[key] != null && trackingData[key] !== '' && av != null;
           }).length;
@@ -1430,12 +1462,12 @@ export default function OKR() {
             </div>
             <div className="flex items-center gap-2">
               {visibleLockedCount > 0 && <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold flex items-center gap-1"><Lock className="w-3 h-3" /> {visibleLockedCount} frozen</span>}
-              <button onClick={lockAllVisible} className="text-[10px] px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-semibold flex items-center gap-1 shadow-sm" title="Snapshot every currently-visible number so it stops changing when live data updates">
-                <Lock className="w-3 h-3" /> Lock All Current Values
+              <button onClick={lockAllVisible} className="text-[10px] px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-semibold flex items-center gap-1 shadow-sm" title="Snapshot every visible AUTO number for ALL OWNERS (Sandeep, Prashant, Nandlal, Anoop) so they stop changing when live data updates">
+                <Lock className="w-3 h-3" /> Lock All Owners' Values
               </button>
               {visibleLockedCount > 0 && (
-                <button onClick={unlockAllVisible} className="text-[10px] px-3 py-1.5 bg-white hover:bg-gray-50 text-gray-700 border border-gray-300 rounded-lg font-semibold flex items-center gap-1" title="Clear frozen snapshots — cells will reflect live data again">
-                  <Unlock className="w-3 h-3" /> Unlock All
+                <button onClick={unlockAllVisible} className="text-[10px] px-3 py-1.5 bg-white hover:bg-gray-50 text-gray-700 border border-gray-300 rounded-lg font-semibold flex items-center gap-1" title="Clear frozen snapshots for ALL OWNERS — cells will reflect live data again">
+                  <Unlock className="w-3 h-3" /> Unlock All Owners
                 </button>
               )}
             </div>
