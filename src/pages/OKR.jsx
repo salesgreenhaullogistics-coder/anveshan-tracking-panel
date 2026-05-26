@@ -177,6 +177,54 @@ function grnFilterByMonth(rows, monthStr) {
     return d && d.getFullYear() === mYr && d.getMonth() === mIdx;
   });
 }
+/* ─── Filflo GRN Ageing — computed from /api/filflo?action=grn slim orders ───────────
+   For each delivered order with GRN pending (grn < fulfilled), measure how many days
+   it has been ageing from delivery date to the reference date (month-end for past
+   months, today for current month). KPI = % of pending-GRN orders aged 0–7 days. */
+function filterFilfloByMonth(orders, monthStr) {
+  if (!monthStr || monthStr === 'rolling') return orders;
+  const mIdx = MABBR_GRN.indexOf(monthStr.slice(0, 3));
+  const mYr = parseInt('20' + monthStr.slice(4)) || 2026;
+  if (mIdx < 0) return [];
+  return orders.filter(o => {
+    const d = grnDate(o.deliveryDate);
+    return d && d.getFullYear() === mYr && d.getMonth() === mIdx;
+  });
+}
+function isFilfloDelivered(status) {
+  const s = String(status || '').toLowerCase();
+  return s.includes('deliver') || s.includes('partial'); /* "delivered" / "partial delivered" */
+}
+function computeFilfloAgeing(orders, refDate) {
+  const ref = refDate || new Date();
+  /* Step 1: delivered only */
+  const delivered = (orders || []).filter(o => isFilfloDelivered(o.status));
+  /* Step 2: GRN pending only — fully GRN'd orders aren't 'ageing' anymore */
+  const pending = delivered.filter(o => grnNum(o.grn) < grnNum(o.fulfilled));
+  const buckets = { '0-7d': { c: 0, val: 0 }, '8-15d': { c: 0, val: 0 }, '16-30d': { c: 0, val: 0 }, '30+d': { c: 0, val: 0 }, 'N/A': { c: 0, val: 0 } };
+  const ageingRows = [];
+  pending.forEach(o => {
+    const d = grnDate(o.deliveryDate);
+    let bucket = 'N/A', days = null;
+    if (d) {
+      days = Math.floor((ref - d) / 86400000);
+      if (days < 0) bucket = 'N/A';
+      else if (days <= 7) bucket = '0-7d';
+      else if (days <= 15) bucket = '8-15d';
+      else if (days <= 30) bucket = '16-30d';
+      else bucket = '30+d';
+    }
+    const shortGrnVal = grnNum(o.shortGrn) || (grnNum(o.fulfilled) - grnNum(o.grn));
+    buckets[bucket].c++;
+    buckets[bucket].val += shortGrnVal;
+    ageingRows.push({ ...o, _ageDays: days, _bucket: bucket, _grnShort: shortGrnVal });
+  });
+  const totalPending = pending.length;
+  const fresh = buckets['0-7d'].c;
+  const ageingPct = totalPending > 0 ? parseFloat((fresh / totalPending * 100).toFixed(1)) : null;
+  return { ageingPct, totalDelivered: delivered.length, totalPending, buckets, ageingRows };
+}
+
 /* Holder-level breakdown: total Deficit ₹, Recovered ₹, Recovery % per Claim Holder.
    Used by the GRN Recovery % KPI drilldown so users see why Logistics number is what it is. */
 function grnHolderBreakdown(rows) {
@@ -369,7 +417,7 @@ export default function OKR() {
   /* KPI month scope — controls Executive Summary actuals. Defaults to most recent month with data. */
   const [kpiMonth, setKpiMonth] = useState('rolling'); // 'rolling' = 12-month rolling, or specific month like "Mar'26"
 
-  /* ─── Live GRN data (Google Apps Script) — used to auto-fill Nandlal's GRN KPIs ─── */
+  /* ─── Live GRN data (Google Apps Script) — used for GRN Recovery / Platform GRN ─── */
   const [grnRaw, setGrnRaw] = useState([]);
   useEffect(() => {
     let cancelled = false;
@@ -377,6 +425,23 @@ export default function OKR() {
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(json => { if (!cancelled) setGrnRaw(Array.isArray(json) ? json : (json.data || [])); })
       .catch(() => { /* silent fail — KPIs fall back to manual */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  /* ─── Live Filflo orders — used for GRN Ageing (delivery date → month-end days) ─── */
+  const [filfloOrders, setFilfloOrders] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/filflo?action=grn')
+      .then(async r => {
+        const text = await r.text();
+        try { return JSON.parse(text); } catch { return null; }
+      })
+      .then(j => {
+        if (cancelled || !j) return;
+        if (Array.isArray(j.orders)) setFilfloOrders(j.orders);
+      })
+      .catch(() => { /* silent — GRN Ageing falls back to GAS-derived value */ });
     return () => { cancelled = true; };
   }, []);
 
@@ -478,6 +543,20 @@ export default function OKR() {
     });
   }, [data]);
 
+  /* ═══ Filflo GRN Ageing scoped to kpiMonth ═══ */
+  const filfloAgeingScoped = useMemo(() => {
+    if (!filfloOrders || filfloOrders.length === 0) return { ageingPct: null, totalDelivered: 0, totalPending: 0, buckets: null };
+    const scoped = kpiMonth === 'rolling' ? filfloOrders : filterFilfloByMonth(filfloOrders, kpiMonth);
+    let ref = new Date();
+    if (kpiMonth !== 'rolling') {
+      const mIdx = MABBR_GRN.indexOf(kpiMonth.slice(0, 3));
+      const mYr = parseInt('20' + kpiMonth.slice(4)) || 2026;
+      const monthEnd = new Date(mYr, mIdx + 1, 0);
+      ref = monthEnd < ref ? monthEnd : ref;
+    }
+    return computeFilfloAgeing(scoped, ref);
+  }, [filfloOrders, kpiMonth]);
+
   /* ═══ GRN metrics scoped to kpiMonth (or full dataset for rolling) ═══ */
   const grnScoped = useMemo(() => {
     if (!grnRaw || grnRaw.length === 0) return { recoveryPct: null, ageingPct: null, platformPct: null, n: 0, openN: 0, logisticsN: 0 };
@@ -558,9 +637,11 @@ export default function OKR() {
             { label: 'With POD', value: a.podPct, target: 90, good: true },
             { label: 'POD Pending', value: a.podDenom > 0 ? (100 - a.podPct) : null, target: 10, good: false },
           ]},
-        { name: 'GRN Ageing', w: 15, actual: g.ageingPct, target: 96, base: 94, high: 100, exc: 100, unit: '%',
-          src: g.ageingPct != null ? 'auto' : 'manual', n: g.openN,
-          basis: g.ageingPct != null ? '% of open claims aged 0–7 days (Claim Date → ref date) — live from GRN' : 'GRN data unavailable — enter manually' },
+        { name: 'GRN Ageing', w: 15, actual: filfloAgeingScoped.ageingPct, target: 96, base: 94, high: 100, exc: 100, unit: '%',
+          src: filfloAgeingScoped.ageingPct != null ? 'auto' : 'manual', n: filfloAgeingScoped.totalPending,
+          basis: filfloAgeingScoped.ageingPct != null
+            ? `% of delivered-but-GRN-pending orders aged 0–7 days from delivery (ref = month-end) — ${filfloAgeingScoped.totalPending} pending of ${filfloAgeingScoped.totalDelivered} delivered · live from Filflo`
+            : 'Filflo data unavailable — enter manually' },
         { name: 'Platform GRN', w: 12, actual: g.platformPct, target: 99, base: 98, high: 99.5, exc: 100, unit: '%',
           src: g.platformPct != null ? 'auto' : 'manual', n: g.n,
           basis: g.platformPct != null ? 'Average of per-platform GRN% (Σ GRN ÷ Σ Dispatched per Order Type)' : 'GRN data unavailable — enter manually' },
@@ -582,7 +663,7 @@ export default function OKR() {
       return allKpis;
     }
     return defs[owner] || [];
-  }, [actuals, owner, grnScoped]);
+  }, [actuals, owner, grnScoped, filfloAgeingScoped]);
 
   /* ═══ Scores — computed ONLY from KPIs that have live data; weights renormalised.
      Manual / no-data KPIs are excluded so they don't inject a fake "50" into the score. */
@@ -1250,13 +1331,18 @@ export default function OKR() {
           var rtoAgeB2 = {"0-7":0,"8-15":0,"16-30":0,"30+":0}; rto.forEach(function(r2){var bd2=safeParseDate(r2.bookingDate);if(bd2){var ag2=Math.floor((refDate-bd2)/86400000);if(ag2<=7)rtoAgeB2["0-7"]++;else if(ag2<=15)rtoAgeB2["8-15"]++;else if(ag2<=30)rtoAgeB2["16-30"]++;else rtoAgeB2["30+"]++;}});
           autoActuals[m]["RTO Ageing Control"] = rto.length > 0 ? parseFloat(percent(rtoAgeB2["0-7"], rto.length).toFixed(1)) : null;
 
-          /* ─── GRN KPIs — live from GRN Deficit GAS endpoint, scoped to this month's Delivery Date ─── */
+          /* ─── GRN Recovery % + Platform GRN — live from GAS GRN Deficit endpoint, scoped to month's Delivery Date ─── */
           const monthGRN = grnFilterByMonth(grnRaw, m);
           if (monthGRN.length > 0) {
             const gMetrics = computeGRNMetrics(monthGRN, isCurrentMonth ? now : monthEnd);
             if (gMetrics.recoveryPct != null) autoActuals[m]['GRN Recovery %'] = gMetrics.recoveryPct;
-            if (gMetrics.ageingPct != null)   autoActuals[m]['GRN Ageing']     = gMetrics.ageingPct;
             if (gMetrics.platformPct != null) autoActuals[m]['Platform GRN']   = gMetrics.platformPct;
+          }
+          /* ─── GRN Ageing — live from Filflo orders, scoped to delivery date in month ─── */
+          const monthFilflo = filterFilfloByMonth(filfloOrders, m);
+          if (monthFilflo.length > 0) {
+            const fa = computeFilfloAgeing(monthFilflo, isCurrentMonth ? now : monthEnd);
+            if (fa.ageingPct != null) autoActuals[m]['GRN Ageing'] = fa.ageingPct;
           }
           /* NOTE: Doc Issues %, Dispatch & Pickup, Quality Control, WH Capacity Utilization remain MANUAL
              (no shipment / GRN source). Filled by user in Monthly Tracking cells. */
@@ -1616,6 +1702,7 @@ export default function OKR() {
           setTrackDrill={setTrackDrill}
           now={now}
           grnRaw={grnRaw}
+          filfloOrders={filfloOrders}
         />
       )}
     </div>
@@ -1627,7 +1714,7 @@ export default function OKR() {
    Only the metrics, charts & columns relevant to the clicked KPI are shown.
    Drill-deeper: click a Platform / Courier / Zone chip to filter in place.
    ═══════════════════════════════════════════════════════════════════════════ */
-function TrackDrillModal({ trackDrill, onClose, setTrackDrill, now, grnRaw = [] }) {
+function TrackDrillModal({ trackDrill, onClose, setTrackDrill, now, grnRaw = [], filfloOrders = [] }) {
   const kpiType = trackDrill.kpiType || 'general';
   const [scope, setScope] = useState({ platform: null, vendor: null, zone: null });
   const [tab, setTab] = useState('summary'); // summary | breakdown | outliers | raw
@@ -1695,6 +1782,23 @@ function TrackDrillModal({ trackDrill, onClose, setTrackDrill, now, grnRaw = [] 
   /* Holder breakdown (reuses page-level helper) */
   const grnHolders = useMemo(() => kpiType === 'grn' ? grnHolderBreakdown(grnRows) : [], [grnRows, kpiType]);
   const grnTotals = useMemo(() => grnHolders.reduce((a, h) => ({ deficit: a.deficit + h.deficit, recovered: a.recovered + h.recovered, claims: a.claims + h.claims }), { deficit: 0, recovered: 0, claims: 0 }), [grnHolders]);
+
+  /* ─── Filflo ageing — used for GRN Ageing KPI drilldown ─── */
+  const isAgeingKPI = kpiType === 'grn' && /aging|ageing/i.test(trackDrill.kpiName || '');
+  const filfloAgeingData = useMemo(() => {
+    if (!isAgeingKPI) return null;
+    const scoped = (!trackDrill.month || trackDrill.month === 'rolling')
+      ? filfloOrders
+      : filterFilfloByMonth(filfloOrders, trackDrill.month);
+    let ref = new Date();
+    if (trackDrill.month && trackDrill.month !== 'rolling') {
+      const mIdx = MABBR_GRN.indexOf(trackDrill.month.slice(0, 3));
+      const mYr = parseInt('20' + trackDrill.month.slice(4)) || 2026;
+      const monthEnd = new Date(mYr, mIdx + 1, 0);
+      ref = monthEnd < ref ? monthEnd : ref;
+    }
+    return computeFilfloAgeing(scoped, ref);
+  }, [filfloOrders, trackDrill.month, isAgeingKPI]);
 
   /* Apply in-modal scope filters */
   const dd = useMemo(() => {
@@ -1932,7 +2036,7 @@ function TrackDrillModal({ trackDrill, onClose, setTrackDrill, now, grnRaw = [] 
             ...(isCost ? [{ k: 'outliers', l: 'Cost Outliers' }] : []),
             ...((isRto || isRtoAging) ? [{ k: 'reasons', l: 'RTO Reasons' }] : []),
             ...(isAgingType ? [{ k: 'aging', l: isRtoAging ? 'Oldest RTOs' : 'Aging List' }] : []),
-            { k: 'raw', l: `Raw Data (${kpiType === 'grn' ? grnRows.length : dd.length})` },
+            { k: 'raw', l: `Raw Data (${kpiType === 'grn' ? (isAgeingKPI ? (filfloAgeingData?.ageingRows?.length || 0) : grnRows.length) : dd.length})` },
           ].map(t => (
             <button key={t.k} onClick={() => setTab(t.k)}
               className={`px-3 py-1.5 text-[10px] font-semibold rounded-t-md transition-colors ${tab === t.k ? tabActiveCls : 'text-gray-500 hover:text-gray-700'}`}>
@@ -2083,15 +2187,52 @@ function TrackDrillModal({ trackDrill, onClose, setTrackDrill, now, grnRaw = [] 
               </div>
             </>)}
 
-            {isGrn && grnRows.length === 0 && (
+            {isGrn && isAgeingKPI && filfloAgeingData && (
+              <div className="space-y-3">
+                <div className="bg-gradient-to-br from-orange-50 to-amber-50 border border-orange-100 rounded-xl p-4">
+                  <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                    <p className="text-[10px] uppercase tracking-wider text-orange-600 font-semibold">GRN Ageing — live from Filflo orders</p>
+                    <span className="text-[9px] text-gray-500 font-mono">scope: {trackDrill.month || 'all time'}</span>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div><p className="text-[9px] text-gray-500">Delivered orders</p><p className="text-2xl font-bold text-emerald-700">{filfloAgeingData.totalDelivered.toLocaleString('en-IN')}</p></div>
+                    <div><p className="text-[9px] text-gray-500">GRN-pending</p><p className="text-2xl font-bold text-amber-700">{filfloAgeingData.totalPending.toLocaleString('en-IN')}</p><p className="text-[8px] text-gray-400">grn &lt; fulfilled qty</p></div>
+                    <div><p className="text-[9px] text-gray-500">Fresh (0–7d)</p><p className="text-2xl font-bold text-emerald-700">{filfloAgeingData.buckets ? filfloAgeingData.buckets['0-7d'].c.toLocaleString('en-IN') : 0}</p></div>
+                    <div><p className="text-[9px] text-gray-500">Ageing %</p><p className="text-2xl font-bold text-indigo-700">{filfloAgeingData.ageingPct != null ? `${filfloAgeingData.ageingPct.toFixed(1)}%` : '—'}</p><p className="text-[8px] text-gray-400">fresh ÷ pending</p></div>
+                  </div>
+                </div>
+                {filfloAgeingData.buckets && (
+                  <div className="bg-white border border-orange-100 rounded-xl p-3">
+                    <p className="text-[10px] font-bold text-orange-700 uppercase mb-2 flex items-center gap-1"><Clock className="w-3 h-3" /> Ageing Buckets (delivery date → month-end)</p>
+                    <div className="space-y-1">
+                      {['0-7d','8-15d','16-30d','30+d','N/A'].map(b => {
+                        const v = filfloAgeingData.buckets[b];
+                        if (!v || v.c === 0) return null;
+                        const max = Math.max(...['0-7d','8-15d','16-30d','30+d','N/A'].map(k => filfloAgeingData.buckets[k].c), 1);
+                        const w = v.c / max * 100;
+                        const color = b === '0-7d' ? '#10b981' : b === '8-15d' ? '#84cc16' : b === '16-30d' ? '#f59e0b' : b === '30+d' ? '#dc2626' : '#9ca3af';
+                        return (
+                          <div key={b} className="flex items-center gap-2 text-[10px]">
+                            <span className="w-14 text-gray-700 font-semibold">{b}</span>
+                            <div className="flex-1 h-4 bg-gray-50 rounded overflow-hidden"><div className="h-full rounded transition-all flex items-center pr-1 justify-end" style={{ width: `${w}%`, background: color }}><span className="text-[9px] font-bold text-white">{v.c}</span></div></div>
+                            <span className="w-24 text-right text-gray-600 font-mono">{Math.round(v.val).toLocaleString('en-IN')} short-units</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="text-[9px] text-gray-400 italic mt-2">Only orders with <code>status = delivered</code> and <code>grn &lt; fulfilled</code> count. Ageing days = (ref date) − (delivery date). Ref = month-end for past months, today for current.</p>
+                  </div>
+                )}
+              </div>
+            )}
+            {isGrn && !isAgeingKPI && grnRows.length === 0 && (
               <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
                 <p className="text-[10px] uppercase tracking-wider text-amber-700 font-semibold mb-1">No GRN data for this scope</p>
                 <p className="text-[11px] text-gray-700">No GRN claim rows exist for <strong>{trackDrill.month || 'this period'}</strong>. The GRN Deficit Controller may not have records for this month yet.</p>
               </div>
             )}
-            {isGrn && grnRows.length > 0 && (() => {
+            {isGrn && !isAgeingKPI && grnRows.length > 0 && (() => {
               const isRecoveryKPI = (trackDrill.kpiName || '').toLowerCase().includes('recovery');
-              const isAgeingKPI   = (trackDrill.kpiName || '').toLowerCase().includes('ageing') || (trackDrill.kpiName || '').toLowerCase().includes('aging');
               const isPlatformKPI = (trackDrill.kpiName || '').toLowerCase().includes('platform');
               const overallRecoveryPct = grnTotals.deficit > 0 ? (grnTotals.recovered / grnTotals.deficit * 100) : null;
               return (
@@ -2222,7 +2363,63 @@ function TrackDrillModal({ trackDrill, onClose, setTrackDrill, now, grnRaw = [] 
               onPickZone={(z) => setScope(s => ({ ...s, zone: z }))}
             />
           )}
-          {tab === 'breakdown' && isGrn && grnRows.length > 0 && (
+          {tab === 'breakdown' && isGrn && isAgeingKPI && filfloAgeingData && (
+            <div className="space-y-3">
+              {(() => {
+                /* Per-platform pending counts + ageing bucket distribution */
+                const byPlat = {};
+                (filfloAgeingData.ageingRows || []).forEach(o => {
+                  const p = o.platform || 'Unknown';
+                  if (!byPlat[p]) byPlat[p] = { platform: p, total: 0, fresh: 0, b815: 0, b1630: 0, b30: 0, na: 0, short: 0 };
+                  byPlat[p].total++;
+                  byPlat[p].short += grnNum(o._grnShort);
+                  if (o._bucket === '0-7d') byPlat[p].fresh++;
+                  else if (o._bucket === '8-15d') byPlat[p].b815++;
+                  else if (o._bucket === '16-30d') byPlat[p].b1630++;
+                  else if (o._bucket === '30+d') byPlat[p].b30++;
+                  else byPlat[p].na++;
+                });
+                const rows = Object.values(byPlat).sort((a, b) => b.total - a.total);
+                return (
+                  <div className="bg-white border border-orange-100 rounded-xl p-3 overflow-x-auto">
+                    <p className="text-[10px] font-bold text-orange-700 uppercase mb-2 flex items-center gap-1"><Building2 className="w-3 h-3" /> Per-Platform GRN Ageing — pending orders</p>
+                    <table className="w-full text-[10px]">
+                      <thead><tr className="bg-orange-50 border-b border-orange-200">
+                        <th className="px-2 py-1 text-left font-semibold text-orange-700">Platform</th>
+                        <th className="px-2 py-1 text-right font-semibold text-amber-700">Pending</th>
+                        <th className="px-2 py-1 text-right font-semibold text-emerald-700">0–7d</th>
+                        <th className="px-2 py-1 text-right font-semibold text-lime-700">8–15d</th>
+                        <th className="px-2 py-1 text-right font-semibold text-amber-700">16–30d</th>
+                        <th className="px-2 py-1 text-right font-semibold text-red-700">30+d</th>
+                        <th className="px-2 py-1 text-right font-semibold text-gray-500">N/A</th>
+                        <th className="px-2 py-1 text-right font-semibold text-indigo-700">Ageing %</th>
+                        <th className="px-2 py-1 text-right font-semibold text-gray-600">Short Units</th>
+                      </tr></thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {rows.map(p => {
+                          const agePct = p.total > 0 ? (p.fresh / p.total * 100) : null;
+                          return (
+                            <tr key={p.platform} className="hover:bg-orange-50/30">
+                              <td className="px-2 py-1 text-gray-800 font-semibold">{p.platform}</td>
+                              <td className="px-2 py-1 text-right text-amber-700">{p.total}</td>
+                              <td className="px-2 py-1 text-right text-emerald-700">{p.fresh}</td>
+                              <td className="px-2 py-1 text-right text-lime-700">{p.b815}</td>
+                              <td className="px-2 py-1 text-right text-amber-700">{p.b1630}</td>
+                              <td className="px-2 py-1 text-right text-red-700">{p.b30}</td>
+                              <td className="px-2 py-1 text-right text-gray-400">{p.na}</td>
+                              <td className="px-2 py-1 text-right font-bold" style={{ color: agePct == null ? '#9ca3af' : agePct >= 96 ? '#059669' : agePct >= 80 ? '#d97706' : '#dc2626' }}>{agePct == null ? '—' : `${agePct.toFixed(1)}%`}</td>
+                              <td className="px-2 py-1 text-right text-gray-600 font-mono">{Math.round(p.short).toLocaleString('en-IN')}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+          {tab === 'breakdown' && isGrn && !isAgeingKPI && grnRows.length > 0 && (
             <div className="space-y-3">
               <div className="bg-white border border-orange-100 rounded-xl p-3 overflow-x-auto">
                 <p className="text-[10px] font-bold text-orange-700 uppercase mb-2 flex items-center gap-1"><Building2 className="w-3 h-3" /> Per-Platform GRN Performance <span className="text-orange-400 normal-case font-normal">(from GRN Deficit data, not shipment dataset)</span></p>
@@ -2363,7 +2560,29 @@ function TrackDrillModal({ trackDrill, onClose, setTrackDrill, now, grnRaw = [] 
           {tab === 'raw' && !isGrn && (
             <DataTable data={dd} columns={cols} exportFilename={`${kpiType}-${trackDrill.month || 'drill'}${hasScope ? '-scoped' : ''}`} pageSize={25} />
           )}
-          {tab === 'raw' && isGrn && (
+          {tab === 'raw' && isGrn && isAgeingKPI && filfloAgeingData && (
+            <DataTable
+              data={filfloAgeingData.ageingRows || []}
+              columns={[
+                { key: 'platform', label: 'Platform' },
+                { key: 'orderId', label: 'Order ID' },
+                { key: 'awb', label: 'AWB' },
+                { key: 'customer', label: 'Customer' },
+                { key: 'city', label: 'City' },
+                { key: 'status', label: 'Status' },
+                { key: 'deliveryDate', label: 'Delivery Date' },
+                { key: '_ageDays', label: 'Ageing (d)', render: v => v == null ? '-' : v },
+                { key: '_bucket', label: 'Bucket' },
+                { key: 'ordered', label: 'Ordered' },
+                { key: 'fulfilled', label: 'Fulfilled' },
+                { key: 'grn', label: 'GRN Qty' },
+                { key: '_grnShort', label: 'GRN Short' },
+              ]}
+              exportFilename={`grn-ageing-${trackDrill.month || 'drill'}`}
+              pageSize={25}
+            />
+          )}
+          {tab === 'raw' && isGrn && !isAgeingKPI && (
             <DataTable
               data={grnRows}
               columns={[
