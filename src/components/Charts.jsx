@@ -89,20 +89,24 @@ const defaultPieOptions = {
   },
 };
 
-export function BarChart({ labels, datasets, title, height = 220, options = {}, stacked = false }) {
+export function BarChart({ labels, datasets, title, height = 220, options = {}, stacked = false, horizontal = false }) {
+  const baseScales = horizontal
+    ? {
+        x: { grid: { color: '#f1f5f9', drawBorder: false }, ticks: { font: { size: 10 }, padding: 4 }, border: { display: false }, beginAtZero: true },
+        y: { grid: { display: false }, ticks: { font: { size: 10 }, autoSkip: false }, border: { display: false } },
+      }
+    : defaultBarOptions.scales;
   const mergedOptions = {
     ...defaultBarOptions,
     ...options,
-    ...(stacked && {
-      scales: {
-        ...defaultBarOptions.scales,
-        x: { ...defaultBarOptions.scales.x, stacked: true },
-        y: { ...defaultBarOptions.scales.y, stacked: true },
-      },
-    }),
+    indexAxis: horizontal ? 'y' : 'x',
+    scales: stacked
+      ? { ...baseScales, x: { ...baseScales.x, stacked: true }, y: { ...baseScales.y, stacked: true } }
+      : baseScales,
     plugins: {
       ...defaultBarOptions.plugins,
       ...options.plugins,
+      legend: datasets.length > 1 ? { display: true, position: 'top', labels: { font: { size: 10 }, padding: 10, usePointStyle: true, pointStyleWidth: 8 } } : { display: false },
       title: title ? { display: true, text: title, font: { size: 12, weight: '600' }, color: '#374151', padding: { bottom: 10 } } : undefined,
     },
   };
@@ -112,8 +116,8 @@ export function BarChart({ labels, datasets, title, height = 220, options = {}, 
     datasets: datasets.map((ds, i) => ({
       backgroundColor: ds.color || COLORS[i],
       borderRadius: 4,
-      barThickness: labels && labels.length > 10 ? undefined : 'flex',
-      maxBarThickness: 40,
+      barThickness: horizontal ? undefined : (labels && labels.length > 10 ? undefined : 'flex'),
+      maxBarThickness: horizontal ? 22 : 40,
       ...ds,
     })),
   };

@@ -73,6 +73,10 @@ function slimOrder(o) {
     name: p.name, sku: p.sku, channel_sku: p.channel_sku,
     quantity: p.quantity, selling_price: p.selling_price, price: p.price,
   })) : [];
+  /* Shiprocket nests shipment-level fields (weight/courier/awb/dates) under `shipments`,
+     which is sometimes an object and sometimes an array. Normalise to one object. */
+  const sh = Array.isArray(o.shipments) ? (o.shipments[0] || {}) : (o.shipments || {});
+  const pick = (...vals) => { for (const v of vals) { if (v != null && String(v).trim() !== '') return v; } return ''; };
   return {
     id: o.id,
     channel_order_id: o.channel_order_id,
@@ -81,18 +85,37 @@ function slimOrder(o) {
     customer_name: o.customer_name,
     customer_city: o.customer_city || o.city,
     customer_state: o.customer_state || o.state,
+    customer_pincode: pick(o.customer_pincode, o.pincode, o.delivery_pincode, sh.delivery_pincode),
     payment_method: o.payment_method,
     total: o.total,
     status: o.status,
-    courier_name: o.courier_name || o.courier,
-    awb_code: o.awb_code || o.awb,
+    courier_name: pick(o.courier_name, o.courier, sh.courier, sh.courier_name),
+    awb_code: pick(o.awb_code, o.awb, sh.awb),
     created_at: o.created_at || o.order_date || o.channel_created_at,
+    /* Pickup / origin */
+    pickup_location: pick(o.pickup_location, o.pickup_location_name, o.pickup),
+    pickup_pincode: pick(o.pickup_pincode, sh.pickup_pincode, o.pickup_address_pincode),
+    /* Logistics / shipment level */
+    weight: pick(o.weight, sh.weight, o.shipping_weight, sh.shipping_weight, o.applied_weight),
+    dimensions: pick(sh.dimensions, o.dimensions),
+    zone: pick(o.zone, sh.zone),
+    /* Dates for TAT / ageing */
+    shipped_date: pick(o.shipped_date, sh.shipped_date, sh.pickup_scheduled_date, o.pickup_scheduled_date),
+    delivered_date: pick(o.delivered_date, sh.delivered_date),
+    rto_delivered_date: pick(o.rto_delivered_date, sh.rto_delivered_date),
+    etd: pick(o.etd, sh.etd, o.expected_delivery_date),
+    sla: pick(o.sla, sh.sla),
+    /* Charges / freight (often only present on shipment-level feeds) */
+    freight_charges: pick(o.freight_charges, sh.freight_charges, o.charges, sh.charges),
+    cod_charges: pick(o.cod_charges, sh.cod_charges),
+    /* NDR / attempts (present only when order has gone through NDR) */
+    delivery_attempts: pick(o.delivery_attempts, sh.delivery_attempts, o.no_of_attempts, sh.no_of_attempts),
     products,
   };
 }
 
-async function fetchPage(page, perPage, token) {
-  const res = await srGet(`/orders?page=${page}&per_page=${perPage}`, token);
+async function fetchPage(page, perPage, token, extra = '') {
+  const res = await srGet(`/orders?page=${page}&per_page=${perPage}${extra}`, token);
   if (!res.ok) {
     const t = await res.text().catch(() => '');
     const err = new Error(`HTTP ${res.status} ${t.slice(0, 120)}`);
@@ -111,17 +134,21 @@ async function fetchPage(page, perPage, token) {
  * a large history without ever exceeding Vercel's per-request limits.
  * Auto-refreshes the token once on 401/403 (checked on the first page of the batch).
  */
-export async function fetchOrders({ perPage = 100, maxPages = 6, startPage = 1 } = {}) {
+export async function fetchOrders({ perPage = 100, maxPages = 6, startPage = 1, from = '', to = '' } = {}) {
   let token = await getToken();
+
+  /* Date-range filter keeps the result set small so we never hit Shiprocket's
+     deep-pagination wall (HTTP 422 "contact support to download the report"). */
+  const extra = (from ? `&from=${encodeURIComponent(from)}` : '') + (to ? `&to=${encodeURIComponent(to)}` : '');
 
   /* First page of this batch — with one token-refresh retry on auth failure */
   let first;
   try {
-    first = await fetchPage(startPage, perPage, token);
+    first = await fetchPage(startPage, perPage, token, extra);
   } catch (e) {
     if (e.status === 401 || e.status === 403) {
       token = await getToken(true);
-      first = await fetchPage(startPage, perPage, token);
+      first = await fetchPage(startPage, perPage, token, extra);
     } else throw new Error(`Shiprocket orders fetch failed (${e.message})`);
   }
 
@@ -132,7 +159,7 @@ export async function fetchOrders({ perPage = 100, maxPages = 6, startPage = 1 }
   if (endPage > startPage && first.rows.length === perPage) {
     const pageNums = [];
     for (let p = startPage + 1; p <= endPage; p++) pageNums.push(p);
-    const results = await Promise.allSettled(pageNums.map(p => fetchPage(p, perPage, token)));
+    const results = await Promise.allSettled(pageNums.map(p => fetchPage(p, perPage, token, extra)));
     results.forEach(r => { if (r.status === 'fulfilled') all.push(...r.value.rows); });
   }
 
@@ -141,22 +168,62 @@ export async function fetchOrders({ perPage = 100, maxPages = 6, startPage = 1 }
 }
 
 /**
+ * Fetch the company's pickup locations (read-only). Returns a slim list of
+ * { name, pincode, city, state } used to derive each order's origin pincode
+ * (orders only carry the pickup-location NAME, not its pincode).
+ */
+export async function fetchPickupLocations() {
+  let token = await getToken();
+  let res;
+  try {
+    res = await srGet('/settings/company/pickup', token);
+    if (res.status === 401 || res.status === 403) { token = await getToken(true); res = await srGet('/settings/company/pickup', token); }
+  } catch (e) {
+    throw new Error(`Shiprocket pickup fetch failed (${e.message})`);
+  }
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`Shiprocket pickup fetch failed (HTTP ${res.status}). ${t.slice(0, 120)}`);
+  }
+  const json = await res.json();
+  const list = json?.data?.shipping_address || json?.data || [];
+  const slim = (Array.isArray(list) ? list : []).map(p => ({
+    name: p.pickup_location || p.name || p.pickup_code || '',
+    pincode: String(p.pin_code || p.pincode || p.zip || '').trim(),
+    city: p.city || '',
+    state: p.state || '',
+  })).filter(p => p.name);
+  return { data: slim, count: slim.length };
+}
+
+/**
  * Router used by both the Vercel handler and the Vite middleware.
- * Only the read action 'orders' is supported.
+ * Read-only: supports 'orders' and 'pickup'.
  */
 export async function handleShiprocketRequest(searchParams) {
   if (!isConfigured()) {
     return { ok: false, status: 200, body: { configured: false, data: [], message: 'Shiprocket not connected. Set SHIPROCKET_EMAIL & SHIPROCKET_PASSWORD in Vercel env vars.' } };
   }
   const action = searchParams.get('action') || 'orders';
+  if (action === 'pickup') {
+    try {
+      const result = await fetchPickupLocations();
+      return { ok: true, status: 200, body: { configured: true, ...result } };
+    } catch (err) {
+      return { ok: false, status: 502, body: { configured: true, error: err.message || String(err) } };
+    }
+  }
   if (action !== 'orders') {
-    return { ok: false, status: 400, body: { error: `Unsupported action "${action}". This endpoint is read-only and supports only "orders".` } };
+    return { ok: false, status: 400, body: { error: `Unsupported action "${action}". This endpoint is read-only and supports "orders" and "pickup".` } };
   }
   const perPage = Math.min(Math.max(parseInt(searchParams.get('per_page') || '100', 10) || 100, 10), 100);
   const maxPages = Math.min(Math.max(parseInt(searchParams.get('max_pages') || '6', 10) || 6, 1), 10);
   const startPage = Math.max(parseInt(searchParams.get('start_page') || '1', 10) || 1, 1);
+  const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s);
+  const from = isDate(searchParams.get('from') || '') ? searchParams.get('from') : '';
+  const to = isDate(searchParams.get('to') || '') ? searchParams.get('to') : '';
   try {
-    const result = await fetchOrders({ perPage, maxPages, startPage });
+    const result = await fetchOrders({ perPage, maxPages, startPage, from, to });
     return { ok: true, status: 200, body: { configured: true, ...result } };
   } catch (err) {
     return { ok: false, status: 502, body: { configured: true, error: err.message || String(err) } };

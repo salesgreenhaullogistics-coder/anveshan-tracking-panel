@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Truck, PackageCheck, Calendar, Clock, AlertTriangle,
   Timer, CheckCircle, RotateCcw, FileText, ClipboardList, BarChart3,
   Target, IndianRupee, Users, FileCheck, Calculator, ChevronLeft,
-  ChevronRight, RefreshCw, Package, Activity, List, Sunrise, ShoppingBag,
+  ChevronRight, RefreshCw, Package, Activity, List, Sunrise, ShoppingBag, Zap,
 } from 'lucide-react';
 
 const NAV_GROUPS = [
@@ -19,13 +19,14 @@ const NAV_GROUPS = [
       { key: 'all-lrs', label: 'All LRs', icon: List },
       { key: 'aging-monitor', label: 'Aging Monitor', icon: Clock },
       { key: 'morning-call', label: 'Morning Logistics Call', icon: Sunrise },
+      { key: 'command-center', label: 'Command Center', icon: Zap },
     ],
   },
   {
     label: 'Documentation',
     items: [
       { key: 'pods', label: 'PODs', icon: FileText },
-      { key: 'grn', label: 'GRN Deficit Controller', icon: ClipboardList },
+      { key: 'grn', label: 'GRN Control Center', icon: ClipboardList },
     ],
   },
   {
