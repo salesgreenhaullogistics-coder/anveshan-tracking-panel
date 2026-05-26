@@ -40,7 +40,7 @@ const isRecovered = (status, finalStatus) => {
 };
 const isLost = (finalStatus) => { const s = String(finalStatus || '').toLowerCase(); return s.includes('reject') || s.includes('lost') || s.includes('denied') || s.includes('writeoff'); };
 
-export default function GRN() {
+function GRNDeficit() {
   /* ─── Data fetching ──────────────────────────────────────────────────── */
   const [raw, setRaw] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1330,6 +1330,547 @@ function BreakdownPanel({ title, icon: Icon, items, onPick }) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+/* ═══ LIVE GRN (FILFLO) TAB ═══════════════════════════════════════════ */
+const FILFLO_KPIS = [
+  { key: 'total', label: 'Total Orders', color: 'blue', icon: Package },
+  { key: 'pending', label: 'Pending Orders', color: 'yellow', icon: Clock },
+  { key: 'approved', label: 'Approved', color: 'indigo', icon: CheckCircle },
+  { key: 'picked', label: 'Picked', color: 'cyan', icon: Package },
+  { key: 'pendingInvoice', label: 'Pending Invoice', color: 'orange', icon: FileText },
+  { key: 'invoiced', label: 'Invoiced', color: 'purple', icon: FileText },
+  { key: 'dispatched', label: 'Dispatched', color: 'blue', icon: Truck },
+  { key: 'delivered', label: 'Delivered', color: 'green', icon: CheckCircle },
+  { key: 'grnEntered', label: 'GRN Entered', color: 'green', icon: ClipboardList },
+  { key: 'rto', label: 'RTO Orders', color: 'red', icon: AlertTriangle },
+];
+
+/* Persisted last-good cache key for the Filflo GRN payload — survives reloads and upstream blips */
+const FILFLO_LS_KEY = 'filflo-grn-last-good';
+function loadFilfloLocalCache(dayFilter) {
+  try {
+    const raw = localStorage.getItem(FILFLO_LS_KEY);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    const key = dayFilter || 'all';
+    return obj && obj[key] ? obj[key] : null;
+  } catch { return null; }
+}
+function saveFilfloLocalCache(dayFilter, body) {
+  try {
+    const raw = localStorage.getItem(FILFLO_LS_KEY);
+    const obj = raw ? (JSON.parse(raw) || {}) : {};
+    obj[dayFilter || 'all'] = { at: Date.now(), body };
+    localStorage.setItem(FILFLO_LS_KEY, JSON.stringify(obj));
+  } catch { /* quota or serialization issue — ignore */ }
+}
+
+function FilfloGRN() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [staleInfo, setStaleInfo] = useState(null); /* { ageMinutes, reason, source: 'server' | 'local' } */
+  const [configured, setConfigured] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [dayFilter, setDayFilter] = useState('');
+  /* advanced filters for the SKU table */
+  const [platformFilter, setPlatformFilter] = useState('all');
+  const [reasonFilter, setReasonFilter] = useState('all');
+  const [skuSearch, setSkuSearch] = useState('');
+  const [minShort, setMinShort] = useState(0);
+  const [drill, setDrill] = useState(null); /* { title, skus?, orders? } */
+  const [trendMode, setTrendMode] = useState('daily'); /* daily | weekly */
+  const [demandPlatform, setDemandPlatform] = useState('all');
+  const [momSearch, setMomSearch] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true); setError(''); setStaleInfo(null);
+    /* Optimistically paint last-good local cache so the dashboard never goes blank during a slow/failed refetch */
+    const localCached = loadFilfloLocalCache(dayFilter);
+    if (localCached?.body) {
+      setData(localCached.body);
+      setConfigured(true);
+      setStaleInfo({ ageMinutes: Math.round((Date.now() - localCached.at) / 60000), reason: 'showing last cached snapshot', source: 'local' });
+    }
+    const force = refreshKey > 0 ? '&refresh=1' : '';
+    fetch(`/api/filflo?action=grn${dayFilter ? `&dayFilter=${dayFilter}` : ''}${force}`)
+      .then(async r => {
+        const text = await r.text();
+        let j = null;
+        try { j = JSON.parse(text); } catch {
+          /* Upstream returned non-JSON (e.g., Vercel "An error occurred…" HTML on crash/timeout).
+             Surface a clean message instead of letting JSON.parse throw a cryptic token error. */
+          const snippet = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
+          throw new Error(`Upstream returned HTTP ${r.status} ${r.statusText || ''} (non-JSON): ${snippet || 'empty response'}`);
+        }
+        if (!r.ok) throw new Error(j.error || `HTTP ${r.status} ${r.statusText || ''}`);
+        return j;
+      })
+      .then(j => {
+        if (cancelled) return;
+        if (j.configured === false) { setConfigured(false); setData(null); setStaleInfo(null); return; }
+        if (j.error) { throw new Error(j.error); }
+        setConfigured(true);
+        setData(j);
+        setError('');
+        if (j.stale) {
+          /* Server served its in-memory cache because upstream is failing */
+          setStaleInfo({ ageMinutes: j.staleAgeMinutes ?? null, reason: j.staleReason || 'upstream temporarily unavailable', source: 'server' });
+        } else if (j.partial) {
+          /* Counts came through but the heavy orders fetch died — show what we have */
+          setStaleInfo({ ageMinutes: 0, reason: j.partialReason || 'partial response', source: 'partial' });
+          saveFilfloLocalCache(dayFilter, j);
+        } else {
+          setStaleInfo(null);
+          saveFilfloLocalCache(dayFilter, j);
+        }
+      })
+      .catch(e => {
+        if (cancelled) return;
+        /* Server fully failed AND we have no in-memory cache. Fall back to localStorage if we have it. */
+        const lc = loadFilfloLocalCache(dayFilter);
+        if (lc?.body) {
+          setData(lc.body);
+          setConfigured(true);
+          setStaleInfo({ ageMinutes: Math.round((Date.now() - lc.at) / 60000), reason: e.message || 'refresh failed', source: 'local' });
+          setError('');
+        } else {
+          setError(e.message || 'Failed to fetch');
+        }
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [refreshKey, dayFilter]);
+
+  const skuRows = data?.skuRows || [];
+  const platforms = useMemo(() => Array.from(new Set(skuRows.map(s => s.platform))).sort(), [skuRows]);
+  const reasons = useMemo(() => Array.from(new Set(skuRows.map(s => s.topReason).filter(r => r && r !== '—'))).sort(), [skuRows]);
+  const filteredSkus = useMemo(() => skuRows.filter(s => {
+    if (platformFilter !== 'all' && s.platform !== platformFilter) return false;
+    if (reasonFilter !== 'all' && s.topReason !== reasonFilter) return false;
+    if (minShort && s.short < minShort) return false;
+    if (skuSearch && !`${s.sku} ${s.name}`.toLowerCase().includes(skuSearch.toLowerCase())) return false;
+    return true;
+  }), [skuRows, platformFilter, reasonFilter, minShort, skuSearch]);
+
+  const ordersAll = data?.orders || [];
+  const openDrill = (title, payload) => setDrill({ title, ...payload });
+
+  /* GRN% trend (daily/weekly) computed from the analysed orders by booking date */
+  const trend = useMemo(() => {
+    const m = {};
+    ordersAll.forEach(o => {
+      if (!o.bookingDate) return;
+      let key = o.bookingDate;
+      if (trendMode === 'weekly') {
+        const d = new Date(o.bookingDate + 'T00:00:00');
+        if (!isNaN(d)) { const dow = (d.getDay() + 6) % 7; d.setDate(d.getDate() - dow); key = d.toISOString().slice(0, 10); }
+      }
+      if (!m[key]) m[key] = { date: key, orders: 0, ordered: 0, fulfilled: 0, grn: 0 };
+      const g = m[key];
+      g.orders++; g.ordered += o.ordered || 0;
+      g.fulfilled += (o.fulfilled != null ? o.fulfilled : (o.grn || 0) + (o.shortGrn || 0));
+      g.grn += o.grn || 0;
+    });
+    return Object.values(m).sort((a, b) => a.date.localeCompare(b.date))
+      .map(g => ({ ...g, grnPct: g.fulfilled ? +(g.grn / g.fulfilled * 100).toFixed(1) : 0, label: new Date(g.date + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }) }));
+  }, [ordersAll, trendMode]);
+
+  /* SKU demand (ordered qty) — highest & lowest, by platform */
+  const demandRows = useMemo(() => demandPlatform === 'all' ? skuRows : skuRows.filter(s => s.platform === demandPlatform), [skuRows, demandPlatform]);
+  const highDemand = useMemo(() => demandRows.slice().sort((a, b) => b.ordered - a.ordered).slice(0, 12), [demandRows]);
+  const lowDemand = useMemo(() => demandRows.filter(s => s.ordered > 0).sort((a, b) => a.ordered - b.ordered).slice(0, 12), [demandRows]);
+
+  /* Month-on-month */
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const monLabel = (m) => { const [y, mo] = String(m).split('-'); return mo ? `${MON[+mo - 1]}'${y.slice(2)}` : m; };
+  const months = data?.months || [];
+  const monthly = data?.monthly || [];
+  const lastM = months[months.length - 1], prevM = months[months.length - 2];
+  const momSkus = useMemo(() => {
+    const list = data?.skuMonthly || [];
+    const q = momSearch.trim().toLowerCase();
+    return (q ? list.filter(s => `${s.sku} ${s.name}`.toLowerCase().includes(q)) : list);
+  }, [data, momSearch]);
+  const STATUS_RE = { pending: /pending|new|open/i, approved: /approv/i, picked: /pick/i, pendingInvoice: /invoice/i, invoiced: /invoiced/i, dispatched: /dispatch/i, delivered: /deliver/i, grnEntered: /grn/i, rto: /rto|return/i };
+
+  const skuCols = [
+    { key: 'platform', label: 'Platform' },
+    { key: 'sku', label: 'SKU' },
+    { key: 'name', label: 'Product' },
+    { key: 'ordered', label: 'Ordered' },
+    { key: 'fulfilled', label: 'Fulfilled' },
+    { key: 'grn', label: 'GRN' },
+    { key: 'shortFulfil', label: 'Short (Fulfil)', render: v => <span className="text-amber-600">{num(v).toLocaleString('en-IN')}</span> },
+    { key: 'shortGrn', label: 'Short (GRN)', render: v => <span className="text-red-600 font-bold">{num(v).toLocaleString('en-IN')}</span> },
+    { key: 'grnPct', label: 'GRN %', render: v => <span style={{ color: v >= 98 ? '#059669' : v >= 90 ? '#d97706' : '#dc2626', fontWeight: 700 }}>{v}%</span> },
+    { key: 'topReason', label: 'Top Reason' },
+    { key: 'topDestination', label: 'Top Destination' },
+  ];
+  const orderCols = [
+    { key: 'orderId', label: 'Order ID' }, { key: 'platform', label: 'Platform' }, { key: 'customer', label: 'Customer' },
+    { key: 'status', label: 'Status' }, { key: 'courier', label: 'Courier' },
+    { key: 'bookingDate', label: 'Booking' }, { key: 'appointmentDate', label: 'Appointment' }, { key: 'deliveryDate', label: 'Delivery' },
+    { key: 'bookingToAppt', label: 'B→Appt(d)', render: v => v == null ? '—' : `${v}d` },
+    { key: 'bookingToDelivery', label: 'B→Del(d)', render: v => v == null ? '—' : `${v}d` },
+    { key: 'ordered', label: 'Ord' }, { key: 'grn', label: 'GRN' }, { key: 'short', label: 'Short' },
+    { key: 'city', label: 'City' }, { key: 'zone', label: 'Zone' }, { key: 'awb', label: 'AWB' },
+  ];
+
+  if (!configured) {
+    return (
+      <div className="bg-amber-50 border border-amber-200 rounded-xl p-6">
+        <h3 className="text-sm font-bold text-amber-800 flex items-center gap-2 mb-2"><Activity className="w-4 h-4" /> Live GRN (Filflo) — Not Connected</h3>
+        <p className="text-[12px] text-gray-700 mb-3">This dashboard reads live order/GRN data from <strong>anveshan.filflo.in</strong> (read-only). Add these <strong>Environment Variables</strong> in Vercel → Settings → Environment Variables, then redeploy:</p>
+        <div className="bg-white border border-amber-100 rounded-lg p-3 font-mono text-[11px] text-gray-700 space-y-1">
+          <div>FILFLO_EMAIL = <span className="text-gray-400">your-filflo-api-user@email</span></div>
+          <div>FILFLO_PASSWORD = <span className="text-gray-400">your-api-user-password</span></div>
+        </div>
+        <button onClick={() => setRefreshKey(k => k + 1)} className="mt-3 text-[11px] px-3 py-1.5 bg-amber-600 text-white rounded-lg font-semibold flex items-center gap-1"><RefreshCw className="w-3.5 h-3.5" /> Re-check</button>
+      </div>
+    );
+  }
+
+  const pfr = data?.platformFillRate || [];
+  const topShort = filteredSkus.slice(0, 12);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <span className="text-[10px] px-2 py-1 rounded bg-emerald-100 text-emerald-700 font-bold flex items-center gap-1"><CheckCircle className="w-3 h-3" /> Live · Read-only · Filflo {data?.sampled ? `· ${data.sampled.toLocaleString('en-IN')} orders analysed` : ''}</span>
+        <div className="flex items-center gap-2">
+          <label className="text-[10px] text-gray-500 font-medium">Period:</label>
+          <select value={dayFilter} onChange={e => setDayFilter(e.target.value)} className="text-[10px] px-2 py-1 border border-indigo-200 rounded bg-white text-indigo-700 font-semibold">
+            <option value="">All time</option><option value="today">Today</option><option value="yesterday">Yesterday</option><option value="thisMonth">This Month</option>
+          </select>
+          <button onClick={() => setRefreshKey(k => k + 1)} className="text-[11px] px-3 py-1.5 bg-indigo-600 text-white rounded-lg font-semibold flex items-center gap-1"><RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} /> Refresh</button>
+        </div>
+      </div>
+
+      {loading && !data && <div className="bg-blue-50 border border-blue-200 rounded-xl p-6 text-center"><RefreshCw className="w-8 h-8 text-blue-500 mx-auto mb-2 animate-spin" /><p className="text-[12px] text-blue-700 font-semibold">Loading & analysing GRN data from Filflo… (first load can take ~20s)</p></div>}
+      {staleInfo && data && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-[11px] text-amber-800 flex items-center justify-between gap-3 flex-wrap">
+          <span>
+            <strong>Showing cached snapshot</strong>
+            {staleInfo.ageMinutes != null && <> ({staleInfo.ageMinutes < 1 ? 'just now' : staleInfo.ageMinutes < 60 ? `${staleInfo.ageMinutes} min old` : `${Math.round(staleInfo.ageMinutes / 60)}h old`})</>}
+            {staleInfo.source === 'local' ? ' from your browser ' : ' from server '}
+            — live Filflo refresh is failing: <span className="font-mono text-[10px] bg-white/70 px-1 rounded">{staleInfo.reason}</span>
+          </span>
+          <button onClick={() => setRefreshKey(k => k + 1)} className="text-[11px] px-2 py-1 bg-amber-600 text-white rounded font-semibold flex items-center gap-1"><RefreshCw className="w-3 h-3" /> Try live refresh</button>
+        </div>
+      )}
+      {error && !data && <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-[11px] text-red-700"><strong>Error:</strong> {error}. <button onClick={() => setRefreshKey(k => k + 1)} className="underline ml-1">Retry</button></div>}
+
+      {data && (<>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          {FILFLO_KPIS.map(k => (
+            <button key={k.key} onClick={() => openDrill(`${k.label}`, { orders: k.key === 'total' ? ordersAll : ordersAll.filter(o => STATUS_RE[k.key] && STATUS_RE[k.key].test(o.status)) })} className="text-left">
+              <KPICard title={k.label} value={(data.kpis?.[k.key] ?? 0).toLocaleString('en-IN')} icon={k.icon} color={k.color} />
+            </button>
+          ))}
+        </div>
+
+        {data.summary && (
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <KPICard title="Overall GRN %" value={`${data.summary.overallGrnPct}%`} icon={CheckCircle} color={data.summary.overallGrnPct >= 98 ? 'green' : data.summary.overallGrnPct >= 90 ? 'yellow' : 'red'} subtitle="GRN ÷ fulfilled" />
+            <KPICard title="GRN Short (CN)" value={data.summary.totGrnShort.toLocaleString('en-IN')} icon={AlertTriangle} color="red" subtitle="credit-note units" />
+            <KPICard title="Fulfilment Short" value={data.summary.totFulfilShort.toLocaleString('en-IN')} icon={Clock} color="orange" subtitle="pending/not dispatched" />
+            <KPICard title="Worst Platform" value={data.summary.worstPlatform ? `${data.summary.worstPlatform.grnPct}%` : '—'} subtitle={data.summary.worstPlatform?.platform || ''} icon={Building2} color="red" />
+            <KPICard title="Worst Destination" value={data.summary.worstDestination ? `${data.summary.worstDestination.grnPct}%` : '—'} subtitle={data.summary.worstDestination?.city || ''} icon={MapPin} color="red" />
+          </div>
+        )}
+
+        {/* Platform GRN fill-rate + TAT — click a row to drill its SKUs */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-gray-100 flex items-center gap-2"><ClipboardList className="w-3.5 h-3.5 text-indigo-500" /><h3 className="text-[12px] font-bold text-gray-700">Platform GRN Fill-Rate & TAT</h3><span className="text-[9px] text-gray-400 ml-auto">click a platform for full drilldown (SKUs + orders)</span></div>
+          <div className="overflow-x-auto"><table className="w-full text-[11px]">
+            <thead><tr className="bg-gray-50 border-b border-gray-100">
+              <th className="px-3 py-2 text-left font-semibold text-gray-500">Platform</th>
+              <th className="px-3 py-2 text-right font-semibold text-gray-500">Orders</th>
+              <th className="px-3 py-2 text-right font-semibold text-gray-500">Ordered</th>
+              <th className="px-3 py-2 text-right font-semibold text-gray-500">Fulfilled</th>
+              <th className="px-3 py-2 text-right font-semibold text-emerald-600">GRN</th>
+              <th className="px-3 py-2 text-right font-semibold text-red-600">Short</th>
+              <th className="px-3 py-2 text-right font-semibold text-indigo-600">GRN %</th>
+              <th className="px-3 py-2 text-right font-semibold text-gray-500">Fill %</th>
+              <th className="px-3 py-2 text-right font-semibold text-gray-500">B→Appt</th>
+              <th className="px-3 py-2 text-right font-semibold text-gray-500">B→Del</th>
+            </tr></thead>
+            <tbody className="divide-y divide-gray-50">
+              {pfr.map(p => (
+                <tr key={p.platform} onClick={() => openDrill(`Platform: ${p.platform}`, { skus: skuRows.filter(s => s.platform === p.platform), orders: ordersAll.filter(o => o.platform === p.platform) })} className="cursor-pointer hover:bg-indigo-50/30">
+                  <td className="px-3 py-1.5 font-medium">{p.platform}</td>
+                  <td className="px-3 py-1.5 text-right">{p.orders}</td>
+                  <td className="px-3 py-1.5 text-right">{p.ordered.toLocaleString('en-IN')}</td>
+                  <td className="px-3 py-1.5 text-right">{p.fulfilled.toLocaleString('en-IN')}</td>
+                  <td className="px-3 py-1.5 text-right font-bold text-emerald-700">{p.grn.toLocaleString('en-IN')}</td>
+                  <td className="px-3 py-1.5 text-right font-bold text-red-600">{p.short.toLocaleString('en-IN')}</td>
+                  <td className="px-3 py-1.5 text-right font-bold" style={{ color: p.grnPct >= 98 ? '#059669' : p.grnPct >= 90 ? '#d97706' : '#dc2626' }}>{p.grnPct}%</td>
+                  <td className="px-3 py-1.5 text-right">{p.fillPct}%</td>
+                  <td className="px-3 py-1.5 text-right">{p.bookingToAppt || '—'}d</td>
+                  <td className="px-3 py-1.5 text-right">{p.bookingToDelivery || '—'}d</td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+        </div>
+
+        {/* Poor GRN% leaderboards */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <div className="bg-white rounded-xl shadow-sm border border-red-100 overflow-hidden">
+            <div className="px-4 py-2.5 border-b border-gray-100 bg-red-50/40 flex items-center gap-2"><AlertTriangle className="w-3.5 h-3.5 text-red-500" /><h3 className="text-[12px] font-bold text-gray-700">Poor GRN % — Platforms</h3><span className="text-[9px] text-gray-400 ml-auto">lowest GRN ÷ fulfilled · click to drill</span></div>
+            <div className="overflow-x-auto"><table className="w-full text-[11px]">
+              <thead><tr className="bg-gray-50 border-b border-gray-100"><th className="px-3 py-2 text-left font-semibold text-gray-500">Platform</th><th className="px-3 py-2 text-right font-semibold text-gray-500">Orders</th><th className="px-3 py-2 text-right font-semibold text-gray-500">Fulfilled</th><th className="px-3 py-2 text-right font-semibold text-emerald-600">GRN</th><th className="px-3 py-2 text-right font-semibold text-red-600">GRN Short</th><th className="px-3 py-2 text-right font-semibold text-indigo-600">GRN %</th></tr></thead>
+              <tbody className="divide-y divide-gray-50">{(data.poorPlatforms || []).map(p => (
+                <tr key={p.platform} onClick={() => openDrill(`Platform: ${p.platform}`, { skus: skuRows.filter(s => s.platform === p.platform), orders: ordersAll.filter(o => o.platform === p.platform) })} className="hover:bg-red-50/30 cursor-pointer">
+                  <td className="px-3 py-1.5 font-medium">{p.platform}</td><td className="px-3 py-1.5 text-right">{p.orders}</td><td className="px-3 py-1.5 text-right">{p.fulfilled.toLocaleString('en-IN')}</td><td className="px-3 py-1.5 text-right text-emerald-700">{p.grn.toLocaleString('en-IN')}</td><td className="px-3 py-1.5 text-right font-bold text-red-600">{p.shortGrn.toLocaleString('en-IN')}</td>
+                  <td className="px-3 py-1.5 text-right font-bold" style={{ color: p.grnPct >= 98 ? '#059669' : p.grnPct >= 90 ? '#d97706' : '#dc2626' }}>{p.grnPct}%</td>
+                </tr>
+              ))}{(!data.poorPlatforms || !data.poorPlatforms.length) && <tr><td colSpan={6} className="px-3 py-4 text-center text-gray-400">No data.</td></tr>}</tbody>
+            </table></div>
+          </div>
+          <div className="bg-white rounded-xl shadow-sm border border-red-100 overflow-hidden">
+            <div className="px-4 py-2.5 border-b border-gray-100 bg-red-50/40 flex items-center gap-2"><MapPin className="w-3.5 h-3.5 text-red-500" /><h3 className="text-[12px] font-bold text-gray-700">Poor GRN % — Destinations</h3><span className="text-[9px] text-gray-400 ml-auto">min 50 fulfilled · click to drill</span></div>
+            <div className="overflow-x-auto max-h-80 overflow-y-auto"><table className="w-full text-[11px]">
+              <thead className="sticky top-0"><tr className="bg-gray-50 border-b border-gray-100"><th className="px-3 py-2 text-left font-semibold text-gray-500 bg-gray-50">City</th><th className="px-3 py-2 text-left font-semibold text-gray-500 bg-gray-50">Zone</th><th className="px-3 py-2 text-right font-semibold text-gray-500 bg-gray-50">Fulfilled</th><th className="px-3 py-2 text-right font-semibold text-emerald-600 bg-gray-50">GRN</th><th className="px-3 py-2 text-right font-semibold text-red-600 bg-gray-50">GRN Short</th><th className="px-3 py-2 text-right font-semibold text-indigo-600 bg-gray-50">GRN %</th></tr></thead>
+              <tbody className="divide-y divide-gray-50">{(data.poorDestinations || []).map(d => (
+                <tr key={d.city} onClick={() => openDrill(`City: ${d.city}`, { orders: ordersAll.filter(o => o.city === d.city) })} className="hover:bg-red-50/30 cursor-pointer">
+                  <td className="px-3 py-1.5 font-medium">{d.city}</td><td className="px-3 py-1.5 text-gray-500">{d.zone}</td><td className="px-3 py-1.5 text-right">{d.fulfilled.toLocaleString('en-IN')}</td><td className="px-3 py-1.5 text-right text-emerald-700">{d.grn.toLocaleString('en-IN')}</td><td className="px-3 py-1.5 text-right font-bold text-red-600">{d.shortGrn.toLocaleString('en-IN')}</td>
+                  <td className="px-3 py-1.5 text-right font-bold" style={{ color: d.grnPct >= 98 ? '#059669' : d.grnPct >= 90 ? '#d97706' : '#dc2626' }}>{d.grnPct}%</td>
+                </tr>
+              ))}{(!data.poorDestinations || !data.poorDestinations.length) && <tr><td colSpan={6} className="px-3 py-4 text-center text-gray-400">No data.</td></tr>}</tbody>
+            </table></div>
+          </div>
+        </div>
+
+        {/* BI charts */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+          <div className="chart-container"><BarChart horizontal title="GRN % by Platform" labels={pfr.map(p => p.platform)} datasets={[{ label: 'GRN %', data: pfr.map(p => p.grnPct), color: '#6366f1' }]} height={220} /></div>
+          <div className="chart-container"><BarChart horizontal title="Top Short SKUs (qty)" labels={topShort.map(s => s.sku)} datasets={[{ label: 'Short', data: topShort.map(s => s.short), color: '#ef4444' }]} height={220} /></div>
+          <div className="chart-container"><DoughnutChart title="Short Reasons" labels={(data.shortReasons || []).slice(0, 6).map(r => r.reason)} data={(data.shortReasons || []).slice(0, 6).map(r => r.qty)} height={220} /></div>
+        </div>
+
+        <div className="chart-container"><BarChart stacked horizontal title="Short split by Platform — Fulfilment (pending/not dispatched) vs GRN (credit note)" labels={pfr.map(p => p.platform)} datasets={[{ label: 'Fulfilment short', data: pfr.map(p => p.shortFulfil), color: '#f59e0b' }, { label: 'GRN short', data: pfr.map(p => p.shortGrn), color: '#ef4444' }]} height={Math.max(180, pfr.length * 26 + 40)} /></div>
+
+        {/* GRN% trend (daily/weekly) */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-3">
+          <div className="flex items-center gap-2 mb-2">
+            <h3 className="text-[12px] font-bold text-gray-700 flex items-center gap-2"><TrendingUp className="w-4 h-4 text-indigo-500" /> GRN % & Demand Trend</h3>
+            <span className="text-[9px] text-gray-400">by booking date · analysed sample</span>
+            <div className="ml-auto flex gap-1">
+              {['daily', 'weekly'].map(mode => <button key={mode} onClick={() => setTrendMode(mode)} className={`text-[10px] px-2 py-1 rounded font-semibold ${trendMode === mode ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600'}`}>{mode === 'daily' ? 'Daily' : 'Weekly'}</button>)}
+            </div>
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <LineChart title="GRN %" labels={trend.map(t => t.label)} datasets={[{ label: 'GRN %', data: trend.map(t => t.grnPct), color: '#6366f1', fill: true }]} height={220} />
+            <LineChart title="Demand (ordered qty)" labels={trend.map(t => t.label)} datasets={[{ label: 'Ordered', data: trend.map(t => t.ordered), color: '#10b981', fill: true }]} height={220} />
+          </div>
+        </div>
+
+        {/* SKU demand by platform — highest & lowest */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-3">
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
+            <h3 className="text-[12px] font-bold text-gray-700 flex items-center gap-2"><Package className="w-4 h-4 text-emerald-500" /> SKU Demand by Platform</h3>
+            <select value={demandPlatform} onChange={e => setDemandPlatform(e.target.value)} className="ml-auto text-[10px] px-2 py-1 border border-gray-200 rounded bg-white"><option value="all">All platforms</option>{platforms.map(p => <option key={p} value={p}>{p}</option>)}</select>
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            {[{ rows: highDemand, label: 'Highest demand SKUs', color: '#10b981', cls: 'text-emerald-700' }, { rows: lowDemand, label: 'Lowest demand SKUs', color: '#f59e0b', cls: 'text-amber-700' }].map(grp => (
+              <div key={grp.label}>
+                <p className={`text-[10px] font-bold mb-1 ${grp.cls}`}>{grp.label}</p>
+                <BarChart horizontal labels={grp.rows.map(s => s.sku)} datasets={[{ label: 'Ordered', data: grp.rows.map(s => s.ordered), color: grp.color }]} height={Math.max(160, grp.rows.length * 22 + 30)} />
+                <div className="overflow-x-auto max-h-56 overflow-y-auto mt-1"><table className="w-full text-[10px]">
+                  <thead className="sticky top-0"><tr className="bg-gray-50"><th className="px-2 py-1 text-left text-gray-500 bg-gray-50">SKU</th><th className="px-2 py-1 text-left text-gray-500 bg-gray-50">Platform</th><th className="px-2 py-1 text-right text-gray-500 bg-gray-50">Ordered</th><th className="px-2 py-1 text-right text-gray-500 bg-gray-50">GRN %</th></tr></thead>
+                  <tbody className="divide-y divide-gray-50">{grp.rows.map(s => (
+                    <tr key={s.platform + s.sku} onClick={() => openDrill(`SKU: ${s.sku} @ ${s.platform}`, { skus: [s], orders: ordersAll.filter(o => o.platform === s.platform) })} className="hover:bg-emerald-50/30 cursor-pointer">
+                      <td className="px-2 py-1 font-mono">{s.sku}</td><td className="px-2 py-1">{s.platform}</td><td className="px-2 py-1 text-right font-bold">{s.ordered.toLocaleString('en-IN')}</td><td className="px-2 py-1 text-right" style={{ color: s.grnPct >= 98 ? '#059669' : s.grnPct >= 90 ? '#d97706' : '#dc2626' }}>{s.grnPct}%</td>
+                    </tr>
+                  ))}</tbody>
+                </table></div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* ── Month-on-Month compare ── */}
+        {months.length < 2 ? (
+          <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-2.5 text-[11px] text-indigo-700">
+            <strong>Month-on-Month</strong> needs ≥2 months in the data. Set <strong>Period → All time</strong> above (the analysed window spans the most recent ~{(data.sampled || 0).toLocaleString('en-IN')} orders).
+          </div>
+        ) : (<>
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+            <div className="px-4 py-2.5 border-b border-gray-100 flex items-center gap-2"><BarChart3 className="w-3.5 h-3.5 text-indigo-500" /><h3 className="text-[12px] font-bold text-gray-700">Month-on-Month — GRN Compare</h3><span className="text-[9px] text-gray-400 ml-auto">earliest month may be partial (recent-orders window)</span></div>
+            <div className="overflow-x-auto"><table className="w-full text-[11px]">
+              <thead><tr className="bg-gray-50 border-b border-gray-100">
+                <th className="px-3 py-2 text-left font-semibold text-gray-500">Month</th>
+                <th className="px-3 py-2 text-right font-semibold text-gray-500">Orders</th>
+                <th className="px-3 py-2 text-right font-semibold text-gray-500">Ordered</th>
+                <th className="px-3 py-2 text-right font-semibold text-gray-500">Fulfilled</th>
+                <th className="px-3 py-2 text-right font-semibold text-emerald-600">GRN</th>
+                <th className="px-3 py-2 text-right font-semibold text-indigo-600">GRN %</th>
+                <th className="px-3 py-2 text-right font-semibold text-red-600">GRN Short</th>
+                <th className="px-3 py-2 text-right font-semibold text-gray-500">Δ GRN% (MoM)</th>
+                <th className="px-3 py-2 text-right font-semibold text-gray-500">Δ Demand (MoM)</th>
+              </tr></thead>
+              <tbody className="divide-y divide-gray-50">
+                {monthly.map((m, i) => {
+                  const prev = monthly[i - 1];
+                  const dGrn = prev ? +(m.grnPct - prev.grnPct).toFixed(1) : null;
+                  const dDem = prev && prev.ordered ? +((m.ordered - prev.ordered) / prev.ordered * 100).toFixed(1) : null;
+                  return (
+                    <tr key={m.month} className="hover:bg-indigo-50/30 cursor-pointer" onClick={() => openDrill(`Month: ${monLabel(m.month)}`, { orders: ordersAll.filter(o => (o.bookingDate || '').slice(0, 7) === m.month) })}>
+                      <td className="px-3 py-1.5 font-medium">{monLabel(m.month)}{i === 0 && <span className="ml-1 text-[8px] text-gray-400">(partial)</span>}</td>
+                      <td className="px-3 py-1.5 text-right">{m.orders}</td>
+                      <td className="px-3 py-1.5 text-right">{m.ordered.toLocaleString('en-IN')}</td>
+                      <td className="px-3 py-1.5 text-right">{m.fulfilled.toLocaleString('en-IN')}</td>
+                      <td className="px-3 py-1.5 text-right text-emerald-700">{m.grn.toLocaleString('en-IN')}</td>
+                      <td className="px-3 py-1.5 text-right font-bold" style={{ color: m.grnPct >= 98 ? '#059669' : m.grnPct >= 90 ? '#d97706' : '#dc2626' }}>{m.grnPct}%</td>
+                      <td className="px-3 py-1.5 text-right font-bold text-red-600">{m.shortGrn.toLocaleString('en-IN')}</td>
+                      <td className="px-3 py-1.5 text-right font-bold" style={{ color: dGrn == null ? '#9ca3af' : dGrn >= 0 ? '#059669' : '#dc2626' }}>{dGrn == null ? '—' : `${dGrn > 0 ? '+' : ''}${dGrn}pp`}</td>
+                      <td className="px-3 py-1.5 text-right font-bold" style={{ color: dDem == null ? '#9ca3af' : dDem >= 0 ? '#059669' : '#dc2626' }}>{dDem == null ? '—' : `${dDem > 0 ? '+' : ''}${dDem}%`}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table></div>
+            <div className="p-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
+              <LineChart title="GRN % by Month" labels={monthly.map(m => monLabel(m.month))} datasets={[{ label: 'GRN %', data: monthly.map(m => m.grnPct), color: '#6366f1', fill: true }]} height={200} />
+              <BarChart title="Demand (ordered qty) by Month" labels={monthly.map(m => monLabel(m.month))} datasets={[{ label: 'Ordered', data: monthly.map(m => m.ordered), color: '#10b981' }]} height={200} />
+            </div>
+          </div>
+
+          {/* SKU demand MoM pivot */}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-3">
+            <div className="flex items-center gap-2 mb-2 flex-wrap">
+              <h3 className="text-[12px] font-bold text-gray-700 flex items-center gap-2"><Layers className="w-4 h-4 text-rose-500" /> SKU Demand — Month-on-Month</h3>
+              <input value={momSearch} onChange={e => setMomSearch(e.target.value)} placeholder="Search SKU…" className="ml-auto text-[10px] px-2 py-1 border border-gray-200 rounded w-40" />
+            </div>
+            <div className="overflow-x-auto max-h-[460px] overflow-y-auto"><table className="w-full text-[10px]">
+              <thead className="sticky top-0"><tr className="bg-gray-50 border-b border-gray-100">
+                <th className="px-2 py-1.5 text-left font-semibold text-gray-500 bg-gray-50">SKU</th>
+                <th className="px-2 py-1.5 text-left font-semibold text-gray-500 bg-gray-50">Product</th>
+                {months.map(mo => <th key={mo} className="px-2 py-1.5 text-right font-semibold text-gray-500 bg-gray-50">{monLabel(mo)}</th>)}
+                <th className="px-2 py-1.5 text-right font-semibold text-gray-500 bg-gray-50">Total</th>
+                <th className="px-2 py-1.5 text-right font-semibold text-indigo-600 bg-gray-50">Δ% (MoM)</th>
+              </tr></thead>
+              <tbody className="divide-y divide-gray-50">
+                {momSkus.slice(0, 200).map(s => {
+                  const last = s.months[lastM] || 0, prev = s.months[prevM] || 0;
+                  const d = prev ? +((last - prev) / prev * 100).toFixed(0) : (last > 0 ? null : 0);
+                  return (
+                    <tr key={s.sku} className="hover:bg-rose-50/30 cursor-pointer" onClick={() => openDrill(`SKU: ${s.sku}`, { skus: skuRows.filter(x => x.sku === s.sku) })}>
+                      <td className="px-2 py-1 font-mono">{s.sku}</td>
+                      <td className="px-2 py-1 truncate max-w-[200px]" title={s.name}>{s.name}</td>
+                      {months.map(mo => <td key={mo} className="px-2 py-1 text-right">{(s.months[mo] || 0).toLocaleString('en-IN')}</td>)}
+                      <td className="px-2 py-1 text-right font-bold">{s.total.toLocaleString('en-IN')}</td>
+                      <td className="px-2 py-1 text-right font-bold" style={{ color: d == null ? '#16a34a' : d >= 0 ? '#059669' : '#dc2626' }}>{d == null ? 'NEW' : `${d > 0 ? '+' : ''}${d}%`}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table></div>
+          </div>
+        </>)}
+
+        {/* SKU-level GRN with advanced filters */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-3">
+          <div className="flex items-center gap-2 flex-wrap mb-2">
+            <h3 className="text-[12px] font-bold text-gray-700 flex items-center gap-2"><Layers className="w-4 h-4 text-rose-500" /> SKU-level GRN {platformFilter !== 'all' && <span className="text-[10px] px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded">{platformFilter} <button onClick={() => setPlatformFilter('all')} className="ml-1 font-bold">×</button></span>}</h3>
+            <div className="flex items-center gap-1.5 ml-auto flex-wrap">
+              <select value={platformFilter} onChange={e => setPlatformFilter(e.target.value)} className="text-[10px] px-2 py-1 border border-gray-200 rounded bg-white"><option value="all">All platforms</option>{platforms.map(p => <option key={p} value={p}>{p}</option>)}</select>
+              <select value={reasonFilter} onChange={e => setReasonFilter(e.target.value)} className="text-[10px] px-2 py-1 border border-gray-200 rounded bg-white"><option value="all">All reasons</option>{reasons.map(r => <option key={r} value={r}>{r}</option>)}</select>
+              <input value={skuSearch} onChange={e => setSkuSearch(e.target.value)} placeholder="Search SKU…" className="text-[10px] px-2 py-1 border border-gray-200 rounded w-32" />
+              <input type="number" value={minShort || ''} onChange={e => setMinShort(parseInt(e.target.value, 10) || 0)} placeholder="Min short" className="text-[10px] px-2 py-1 border border-gray-200 rounded w-20" />
+            </div>
+          </div>
+          <DataTable data={filteredSkus} columns={skuCols} pageSize={25} exportFilename="filflo-sku-grn" emptyMessage="No SKUs match the filters." onRowClick={s => openDrill(`SKU: ${s.sku} @ ${s.platform}`, { skus: [s], orders: ordersAll.filter(o => o.platform === s.platform) })} />
+        </div>
+
+        {/* Short reasons + TAT by zone */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+            <div className="px-4 py-2.5 border-b border-gray-100 flex items-center gap-2"><AlertTriangle className="w-3.5 h-3.5 text-red-500" /><h3 className="text-[12px] font-bold text-gray-700">Why SKUs went short (reasons)</h3></div>
+            <div className="overflow-x-auto max-h-72 overflow-y-auto"><table className="w-full text-[11px]">
+              <thead className="sticky top-0"><tr className="bg-gray-50 border-b border-gray-100"><th className="px-3 py-2 text-left font-semibold text-gray-500 bg-gray-50">Reason</th><th className="px-3 py-2 text-right font-semibold text-red-600 bg-gray-50">Short Qty</th><th className="px-3 py-2 text-right font-semibold text-gray-500 bg-gray-50">Lines</th></tr></thead>
+              <tbody className="divide-y divide-gray-50">{(data.shortReasons || []).map(r => (
+                <tr key={r.reason} onClick={() => openDrill(`Reason: ${r.reason}`, { skus: skuRows.filter(s => s.topReason === r.reason) })} className="hover:bg-red-50/30 cursor-pointer"><td className="px-3 py-1.5">{r.reason}</td><td className="px-3 py-1.5 text-right font-bold text-red-600">{r.qty.toLocaleString('en-IN')}</td><td className="px-3 py-1.5 text-right text-gray-500">{r.lines}</td></tr>
+              ))}{(!data.shortReasons || !data.shortReasons.length) && <tr><td colSpan={3} className="px-3 py-4 text-center text-gray-400">No shorts.</td></tr>}</tbody>
+            </table></div>
+          </div>
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+            <div className="px-4 py-2.5 border-b border-gray-100 flex items-center gap-2"><Clock className="w-3.5 h-3.5 text-indigo-500" /><h3 className="text-[12px] font-bold text-gray-700">TAT by Zone (Booking → Appt / Delivery)</h3></div>
+            <div className="overflow-x-auto"><table className="w-full text-[11px]">
+              <thead><tr className="bg-gray-50 border-b border-gray-100"><th className="px-3 py-2 text-left font-semibold text-gray-500">Zone</th><th className="px-3 py-2 text-right font-semibold text-gray-500">Orders</th><th className="px-3 py-2 text-right font-semibold text-indigo-600">B→Appt</th><th className="px-3 py-2 text-right font-semibold text-indigo-600">B→Del</th><th className="px-3 py-2 text-right font-semibold text-emerald-600">GRN %</th></tr></thead>
+              <tbody className="divide-y divide-gray-50">{(data.tatByZone || []).map(z => (
+                <tr key={z.zone} onClick={() => openDrill(`Zone: ${z.zone}`, { orders: ordersAll.filter(o => o.zone === z.zone) })} className="hover:bg-indigo-50/30 cursor-pointer"><td className="px-3 py-1.5 font-medium">{z.zone}</td><td className="px-3 py-1.5 text-right">{z.orders}</td><td className="px-3 py-1.5 text-right">{z.bookingToAppt || '—'}d</td><td className="px-3 py-1.5 text-right">{z.bookingToDelivery || '—'}d</td><td className="px-3 py-1.5 text-right font-bold">{z.grnPct}%</td></tr>
+              ))}</tbody>
+            </table></div>
+          </div>
+        </div>
+
+        {/* Destination GRN */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-gray-100 flex items-center gap-2"><MapPin className="w-3.5 h-3.5 text-amber-500" /><h3 className="text-[12px] font-bold text-gray-700">Top Destinations by Short GRN</h3></div>
+          <div className="overflow-x-auto max-h-80 overflow-y-auto"><table className="w-full text-[11px]">
+            <thead className="sticky top-0"><tr className="bg-gray-50 border-b border-gray-100"><th className="px-3 py-2 text-left font-semibold text-gray-500 bg-gray-50">City</th><th className="px-3 py-2 text-left font-semibold text-gray-500 bg-gray-50">Zone</th><th className="px-3 py-2 text-right font-semibold text-gray-500 bg-gray-50">Ordered</th><th className="px-3 py-2 text-right font-semibold text-emerald-600 bg-gray-50">GRN</th><th className="px-3 py-2 text-right font-semibold text-red-600 bg-gray-50">Short</th><th className="px-3 py-2 text-right font-semibold text-indigo-600 bg-gray-50">GRN %</th></tr></thead>
+            <tbody className="divide-y divide-gray-50">{(data.destinationGrn || []).map(d => (
+              <tr key={d.city} onClick={() => openDrill(`City: ${d.city}`, { orders: ordersAll.filter(o => o.city === d.city) })} className="hover:bg-amber-50/30 cursor-pointer"><td className="px-3 py-1.5 font-medium">{d.city}</td><td className="px-3 py-1.5 text-gray-500">{d.zone}</td><td className="px-3 py-1.5 text-right">{d.ordered.toLocaleString('en-IN')}</td><td className="px-3 py-1.5 text-right text-emerald-700">{d.grn.toLocaleString('en-IN')}</td><td className="px-3 py-1.5 text-right font-bold text-red-600">{d.short.toLocaleString('en-IN')}</td><td className="px-3 py-1.5 text-right font-bold">{d.grnPct}%</td></tr>
+            ))}</tbody>
+          </table></div>
+        </div>
+
+        {/* Orders with logistics */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-3">
+          <h3 className="text-[12px] font-bold text-gray-700 mb-2 flex items-center gap-2"><Database className="w-4 h-4 text-indigo-500" /> Orders — logistics & GRN ({(data.orders || []).length})</h3>
+          <DataTable data={data.orders || []} columns={orderCols} pageSize={50} exportFilename="filflo-grn-orders" onRowClick={o => openDrill(`Order: ${o.orderId}`, { orders: [o] })} />
+        </div>
+      </>)}
+
+      {drill && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm overflow-auto p-4" onClick={() => setDrill(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl mt-8 mb-8" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100">
+              <h3 className="text-sm font-bold text-indigo-700">{drill.title}</h3>
+              <button onClick={() => setDrill(null)} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="p-4 space-y-4">
+              {drill.skus && drill.skus.length > 0 && (
+                <div><p className="text-[11px] font-bold text-gray-600 mb-1">SKU breakdown ({drill.skus.length})</p><DataTable data={drill.skus} columns={skuCols} pageSize={15} exportFilename="grn-drill-skus" /></div>
+              )}
+              {drill.orders && drill.orders.length > 0 && (
+                <div><p className="text-[11px] font-bold text-gray-600 mb-1">Orders ({drill.orders.length})</p><DataTable data={drill.orders} columns={orderCols} pageSize={15} exportFilename="grn-drill-orders" /></div>
+              )}
+              {(!drill.skus || !drill.skus.length) && (!drill.orders || !drill.orders.length) && (
+                <p className="text-[12px] text-gray-400 text-center py-6">No rows for this selection (drilldown covers the analysed sample of {(data?.sampled || 0).toLocaleString('en-IN')} orders).</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══ PAGE WRAPPER — two tabs (Live GRN + GRN Deficit) ════════════════ */
+export default function GRN() {
+  const [tab, setTab] = useState('live');
+  return (
+    <div className="space-y-3">
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-1.5 flex items-center gap-1">
+        {[
+          { k: 'live', l: 'Live GRN (Filflo)', icon: Activity },
+          { k: 'deficit', l: 'GRN Deficit', icon: ClipboardList },
+        ].map(t => { const Icon = t.icon; return (
+          <button key={t.k} onClick={() => setTab(t.k)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-all whitespace-nowrap ${tab === t.k ? 'bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow' : 'text-gray-600 hover:bg-gray-50'}`}>
+            <Icon className="w-3.5 h-3.5" /> {t.l}
+          </button>
+        ); })}
+      </div>
+      {tab === 'live' ? <FilfloGRN /> : <GRNDeficit />}
     </div>
   );
 }

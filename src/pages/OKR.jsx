@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useCallback } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import { useData } from '../context/DataContext';
 import KPICard from '../components/KPICard';
 import DataTable from '../components/DataTable';
@@ -155,6 +155,51 @@ function Sparkline({ values, width = 80, height = 22, color = '#6366F1', target 
 }
 
 const MONTHS_LIST = ["Mar'26","Apr'26","May'26","Jun'26","Jul'26","Aug'26"];
+
+/* ─── GRN live data source (mirrors src/pages/GRN.jsx) ──────────────────── */
+const GRN_GAS_URL = 'https://script.google.com/macros/s/AKfycbw9b8mBaVqC4Ps-j1e1jxeqikvsNeZyYwgJemkoblqWex5aq3Gv-sUniIjeZseTa2nQ/exec';
+const grnNum = v => { const n = parseFloat(v); return isFinite(n) ? n : 0; };
+const grnDate = v => { if (!v) return null; const d = new Date(v); return isNaN(d) ? null : d; };
+const grnIsOpen = s => { if (!s) return true; const v = String(s).toLowerCase(); return v.includes('pending') || v.includes('open') || v.includes('process'); };
+const grnIsRecovered = (status, finalStatus) => {
+  const s = String(finalStatus || '').toLowerCase();
+  if (s.includes('recover') || s.includes('credit') || s.includes('settled') || s.includes('cn issued') || s.includes('paid')) return true;
+  const t = String(status || '').toLowerCase();
+  return t.includes('recover') || t.includes('credit') || t.includes('settled') || t.includes('paid');
+};
+const MABBR_GRN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function grnFilterByMonth(rows, monthStr) {
+  const mIdx = MABBR_GRN.indexOf(monthStr.slice(0, 3));
+  const mYr = parseInt('20' + monthStr.slice(4)) || 2026;
+  if (mIdx < 0) return [];
+  return rows.filter(r => {
+    const d = grnDate(r['Delivery Date']);
+    return d && d.getFullYear() === mYr && d.getMonth() === mIdx;
+  });
+}
+function computeGRNMetrics(rows, refDate) {
+  if (!rows || rows.length === 0) return { recoveryPct: null, ageingPct: null, platformPct: null, n: 0, openN: 0, dispatched: 0, grn: 0 };
+  const dispatched = rows.reduce((s, r) => s + grnNum(r['Fulfilled/Dispatched Qty (in Units)']), 0);
+  const grnQty = rows.reduce((s, r) => s + grnNum(r['GRN Qty (in Units)']), 0);
+  const recoveryPct = dispatched > 0 ? parseFloat((grnQty / dispatched * 100).toFixed(1)) : null;
+  /* Ageing: % of open (non-recovered) claims aged 0–7 days from Claim Date */
+  const ref = refDate || new Date();
+  const open = rows.filter(r => grnIsOpen(r['Claim Status']) && !grnIsRecovered(r['Claim Status'], r['Claim Final Status']));
+  let fresh = 0;
+  open.forEach(r => { const d = grnDate(r['Claim Date']); if (d) { const days = Math.floor((ref - d) / 86400000); if (days >= 0 && days <= 7) fresh++; } });
+  const ageingPct = open.length > 0 ? parseFloat((fresh / open.length * 100).toFixed(1)) : null;
+  /* Platform GRN: simple average of per-platform GRN% (Sum GRN ÷ Sum Dispatched per platform) — equal-weight, penalises any underperformer */
+  const byPlat = {};
+  rows.forEach(r => {
+    const p = (r['Order Type'] || 'Unknown').toString();
+    if (!byPlat[p]) byPlat[p] = { disp: 0, grn: 0 };
+    byPlat[p].disp += grnNum(r['Fulfilled/Dispatched Qty (in Units)']);
+    byPlat[p].grn += grnNum(r['GRN Qty (in Units)']);
+  });
+  const platPcts = Object.values(byPlat).filter(p => p.disp > 0).map(p => p.grn / p.disp * 100);
+  const platformPct = platPcts.length > 0 ? parseFloat((platPcts.reduce((a, b) => a + b, 0) / platPcts.length).toFixed(1)) : null;
+  return { recoveryPct, ageingPct, platformPct, n: rows.length, openN: open.length, dispatched, grn: grnQty };
+}
 const PERIODS = ['Monthly','Quarterly','Yearly'];
 const fmt = v => v != null && isFinite(v) ? (Number.isInteger(v) ? String(v) : v.toFixed(1)) : '-';
 /* Null-safe gap: returns null when actual is missing (manual KPI not yet entered / no data for month) */
@@ -289,6 +334,17 @@ export default function OKR() {
   /* KPI month scope — controls Executive Summary actuals. Defaults to most recent month with data. */
   const [kpiMonth, setKpiMonth] = useState('rolling'); // 'rolling' = 12-month rolling, or specific month like "Mar'26"
 
+  /* ─── Live GRN data (Google Apps Script) — used to auto-fill Nandlal's GRN KPIs ─── */
+  const [grnRaw, setGrnRaw] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(GRN_GAS_URL, { method: 'GET', redirect: 'follow' })
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(json => { if (!cancelled) setGrnRaw(Array.isArray(json) ? json : (json.data || [])); })
+      .catch(() => { /* silent fail — KPIs fall back to manual */ });
+    return () => { cancelled = true; };
+  }, []);
+
   const now = new Date();
   const cur = KPI_OWNERS.find(o => o.key === owner);
 
@@ -387,9 +443,25 @@ export default function OKR() {
     });
   }, [data]);
 
+  /* ═══ GRN metrics scoped to kpiMonth (or full dataset for rolling) ═══ */
+  const grnScoped = useMemo(() => {
+    if (!grnRaw || grnRaw.length === 0) return { recoveryPct: null, ageingPct: null, platformPct: null, n: 0, openN: 0 };
+    const scopedRows = kpiMonth === 'rolling' ? grnRaw : grnFilterByMonth(grnRaw, kpiMonth);
+    /* For past months, age claims relative to month end (matches Monthly Tracking ageing semantics) */
+    let refDate = new Date();
+    if (kpiMonth !== 'rolling') {
+      const mIdx = MABBR_GRN.indexOf(kpiMonth.slice(0, 3));
+      const mYr = parseInt('20' + kpiMonth.slice(4)) || 2026;
+      const monthEnd = new Date(mYr, mIdx + 1, 0);
+      refDate = monthEnd < refDate ? monthEnd : refDate;
+    }
+    return computeGRNMetrics(scopedRows, refDate);
+  }, [grnRaw, kpiMonth]);
+
   /* ═══ KPI definitions per owner ═══ */
   const kpis = useMemo(() => {
     const a = actuals;
+    const g = grnScoped;
     /* src: 'auto' = computed live from shipment data · 'manual' = entered/static (no shipment source yet)
        n = number of shipment records backing an auto KPI (so the number is verifiable) */
     const otifPlatforms = ['Blinkit','Zepto','Swiggy','Amazon','Big Basket'];
@@ -440,15 +512,21 @@ export default function OKR() {
         { name: 'Non-Appt 0-2 Days %', w: 3, actual: a.apptDenom > 0 ? a.noApptPcts['0-2'] : null, target: 90, base: 84, high: 95, exc: 100, unit: '%', src: 'auto', n: a.apptDenom, basis: 'in-transit shipments' },
       ],
       nandlal: [
-        { name: 'GRN Recovery %', w: 35, actual: null, target: 93, base: 90, high: 97, exc: 100, unit: '%', src: 'manual', basis: 'GRN tracked outside shipment data — enter in Monthly Tracking' },
+        { name: 'GRN Recovery %', w: 35, actual: g.recoveryPct, target: 93, base: 90, high: 97, exc: 100, unit: '%',
+          src: g.recoveryPct != null ? 'auto' : 'manual', n: g.n,
+          basis: g.recoveryPct != null ? 'Σ(GRN Qty) ÷ Σ(Dispatched Qty) × 100 — live from GRN Deficit Controller' : 'GRN data unavailable — enter manually' },
         { name: 'POD Visibility', w: 5, actual: a.podDenom > 0 ? a.podPct : null, target: 90, base: 80, high: 96, exc: 100, unit: '%', src: 'auto', n: a.podDenom, basis: 'delivered shipments' },
         { name: 'POD Ageing', w: 15, actual: a.podDenom > 0 ? a.podPct : null, target: 90, base: 80, high: 96, exc: 100, unit: '%', src: 'auto', n: a.podDenom, basis: 'delivered shipments (POD upload rate)',
           sub: [
             { label: 'With POD', value: a.podPct, target: 90, good: true },
             { label: 'POD Pending', value: a.podDenom > 0 ? (100 - a.podPct) : null, target: 10, good: false },
           ]},
-        { name: 'GRN Ageing', w: 15, actual: null, target: 96, base: 94, high: 100, exc: 100, unit: '%', src: 'manual', basis: 'GRN ageing tracked outside shipment data' },
-        { name: 'Platform GRN', w: 12, actual: null, target: 99, base: 98, high: 99.5, exc: 100, unit: '%', src: 'manual', basis: 'platform GRN tracked outside shipment data' },
+        { name: 'GRN Ageing', w: 15, actual: g.ageingPct, target: 96, base: 94, high: 100, exc: 100, unit: '%',
+          src: g.ageingPct != null ? 'auto' : 'manual', n: g.openN,
+          basis: g.ageingPct != null ? '% of open claims aged 0–7 days (Claim Date → ref date) — live from GRN' : 'GRN data unavailable — enter manually' },
+        { name: 'Platform GRN', w: 12, actual: g.platformPct, target: 99, base: 98, high: 99.5, exc: 100, unit: '%',
+          src: g.platformPct != null ? 'auto' : 'manual', n: g.n,
+          basis: g.platformPct != null ? 'Average of per-platform GRN% (Σ GRN ÷ Σ Dispatched per Order Type)' : 'GRN data unavailable — enter manually' },
       ],
       anoop: [
         { name: 'Doc Issues %', w: 10, actual: null, target: 98.5, base: 98, high: 99, exc: 100, unit: '%', src: 'manual', basis: 'documentation KPI — manual entry' },
@@ -467,7 +545,7 @@ export default function OKR() {
       return allKpis;
     }
     return defs[owner] || [];
-  }, [actuals, owner]);
+  }, [actuals, owner, grnScoped]);
 
   /* ═══ Scores — computed ONLY from KPIs that have live data; weights renormalised.
      Manual / no-data KPIs are excluded so they don't inject a fake "50" into the score. */
@@ -1060,9 +1138,17 @@ export default function OKR() {
           autoActuals[m]["B2B RTO Tracking"] = total > 0 ? parseFloat(percent(rto.length, total).toFixed(1)) : null;
           var rtoAgeB2 = {"0-7":0,"8-15":0,"16-30":0,"30+":0}; rto.forEach(function(r2){var bd2=safeParseDate(r2.bookingDate);if(bd2){var ag2=Math.floor((refDate-bd2)/86400000);if(ag2<=7)rtoAgeB2["0-7"]++;else if(ag2<=15)rtoAgeB2["8-15"]++;else if(ag2<=30)rtoAgeB2["16-30"]++;else rtoAgeB2["30+"]++;}});
           autoActuals[m]["RTO Ageing Control"] = rto.length > 0 ? parseFloat(percent(rtoAgeB2["0-7"], rto.length).toFixed(1)) : null;
-          /* NOTE: GRN Recovery %, GRN Ageing, Platform GRN, Doc Issues %, Dispatch & Pickup, Quality Control,
-             WH Capacity Utilization are MANUAL KPIs (no shipment-data source). They are intentionally left
-             blank here so the user enters verified values — we no longer auto-fill fake placeholders. */
+
+          /* ─── GRN KPIs — live from GRN Deficit GAS endpoint, scoped to this month's Delivery Date ─── */
+          const monthGRN = grnFilterByMonth(grnRaw, m);
+          if (monthGRN.length > 0) {
+            const gMetrics = computeGRNMetrics(monthGRN, isCurrentMonth ? now : monthEnd);
+            if (gMetrics.recoveryPct != null) autoActuals[m]['GRN Recovery %'] = gMetrics.recoveryPct;
+            if (gMetrics.ageingPct != null)   autoActuals[m]['GRN Ageing']     = gMetrics.ageingPct;
+            if (gMetrics.platformPct != null) autoActuals[m]['Platform GRN']   = gMetrics.platformPct;
+          }
+          /* NOTE: Doc Issues %, Dispatch & Pickup, Quality Control, WH Capacity Utilization remain MANUAL
+             (no shipment / GRN source). Filled by user in Monthly Tracking cells. */
         });
 
         /* expTrackMonth state is at component top level */
