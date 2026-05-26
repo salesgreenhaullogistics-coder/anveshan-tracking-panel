@@ -3,12 +3,14 @@ import react from '@vitejs/plugin-react';
 import https from 'https';
 import { handleShipmentApiRequest } from './api/shipmentEngine.mjs';
 import { handleShiprocketRequest } from './api/shiprocketEngine.mjs';
+import { handleRunBot } from './api/botRunner.mjs';
+import { handleFilfloRequest } from './api/filfloEngine.mjs';
 
 const APPS_SCRIPT_URL =
   'https://script.google.com/macros/s/AKfycbzu8zSSmcPeuMAxUdDylahx7UuNBmMXWYd8W1wCVptdR0oUVLEIrYJiz37TRW_qPk2kQA/exec';
 
 const KPI_APPS_SCRIPT_URL =
-  'https://script.google.com/macros/s/AKfycbxI66Y3lZZqeSlZCdIQKVrPGla10AvM-3vVI89t8gc49ld4ukH3wnrIIEiuCv6khAAA/exec';
+  'https://script.google.com/macros/s/AKfycbyfrjwYyQvRU4K-WjKS6x_fSuI7hfcDma4NRoWAcbtX4_wJBG-wfM7F6ft27qFrFfXn/exec';
 
 function fetchFollowRedirects(url, maxRedirects = 5) {
   return new Promise((resolve, reject) => {
@@ -85,6 +87,38 @@ function apiProxyPlugin() {
           res.end(body);
         } catch (err) {
           kpiInFlight = null;
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+
+      server.middlewares.use('/api/run-bot', async (req, res) => {
+        if (req.method !== 'POST') {
+          res.writeHead(405, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: 'Use POST.' }));
+          return;
+        }
+        try {
+          let raw = '';
+          for await (const chunk of req) raw += chunk;
+          let body = {};
+          try { body = raw ? JSON.parse(raw) : {}; } catch { body = {}; }
+          const result = await handleRunBot(body);
+          res.writeHead(result.status || 200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify(result.body));
+        } catch (err) {
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: err.message }));
+        }
+      });
+
+      server.middlewares.use('/api/filflo', async (req, res) => {
+        try {
+          const fullUrl = new URL(`/api/filflo${req.url || ''}`, 'http://localhost');
+          const result = await handleFilfloRequest(fullUrl.searchParams);
+          res.writeHead(result.status || 200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify(result.body));
+        } catch (err) {
           res.writeHead(502, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: err.message }));
         }

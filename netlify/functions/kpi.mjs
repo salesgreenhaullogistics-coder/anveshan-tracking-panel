@@ -6,7 +6,7 @@
 import https from 'https';
 
 const KPI_APPS_SCRIPT_URL =
-  'https://script.google.com/macros/s/AKfycbxI66Y3lZZqeSlZCdIQKVrPGla10AvM-3vVI89t8gc49ld4ukH3wnrIIEiuCv6khAAA/exec';
+  'https://script.google.com/macros/s/AKfycbyfrjwYyQvRU4K-WjKS6x_fSuI7hfcDma4NRoWAcbtX4_wJBG-wfM7F6ft27qFrFfXn/exec';
 
 function fetchFollowRedirects(url, maxRedirects = 5) {
   return new Promise((resolve, reject) => {

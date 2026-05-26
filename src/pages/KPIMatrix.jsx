@@ -13,7 +13,7 @@ import {
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const KPI_API = 'https://script.google.com/macros/s/AKfycbxI66Y3lZZqeSlZCdIQKVrPGla10AvM-3vVI89t8gc49ld4ukH3wnrIIEiuCv6khAAA/exec';
+const KPI_API = 'https://script.google.com/macros/s/AKfycbyfrjwYyQvRU4K-WjKS6x_fSuI7hfcDma4NRoWAcbtX4_wJBG-wfM7F6ft27qFrFfXn/exec';
 const AUTO_REFRESH_MS = 10 * 60 * 1000;
 const NON_DATA_VALUES = new Set(['holiday', 'week off', 'off', '3rd sat off', '3rd sat', 'leave', 'na', '-', 'done', '']);
 const OWNER_COLORS = { Sandeep: '#3B82F6', Anoop: '#10B981', Prashant: '#F59E0B', Nandlal: '#EF4444', Souvik: '#8B5CF6', 'Sandeep Dagar': '#EC4899', 'Abhay Mishra': '#06B6D4' };
