@@ -319,10 +319,10 @@ function classifyKPI(kn, mRows, now) {
     return { kpiType, filtered, excludedCount, note };
   }
 
-  /* GRN — no shipment-level data; show month rows with a note */
+  /* GRN — live from GRN Deficit Controller. Drilldown shows GRN claim data, not shipment rows. */
   if (kn.includes('grn')) {
     kpiType = 'grn';
-    note = 'GRN data is tracked separately from shipment records. The list below shows all shipments for the month for context only — GRN status is not captured per shipment yet.';
+    note = 'GRN drilldown is sourced live from the GRN Deficit Controller (claim-level data) — not from shipment records. Holder / Platform / Status / Ageing views below reflect actual GRN claims.';
     return { kpiType, filtered: mRows, excludedCount, note };
   }
 
@@ -1615,6 +1615,7 @@ export default function OKR() {
           onClose={() => setTrackDrill(null)}
           setTrackDrill={setTrackDrill}
           now={now}
+          grnRaw={grnRaw}
         />
       )}
     </div>
@@ -1626,10 +1627,74 @@ export default function OKR() {
    Only the metrics, charts & columns relevant to the clicked KPI are shown.
    Drill-deeper: click a Platform / Courier / Zone chip to filter in place.
    ═══════════════════════════════════════════════════════════════════════════ */
-function TrackDrillModal({ trackDrill, onClose, setTrackDrill, now }) {
+function TrackDrillModal({ trackDrill, onClose, setTrackDrill, now, grnRaw = [] }) {
   const kpiType = trackDrill.kpiType || 'general';
   const [scope, setScope] = useState({ platform: null, vendor: null, zone: null });
   const [tab, setTab] = useState('summary'); // summary | breakdown | outliers | raw
+
+  /* ─── GRN-specific scoped data — only relevant when this drill is for a GRN KPI ─── */
+  const grnRows = useMemo(() => {
+    if (kpiType !== 'grn') return [];
+    if (!trackDrill.month || trackDrill.month === 'rolling') return grnRaw;
+    return grnFilterByMonth(grnRaw, trackDrill.month);
+  }, [grnRaw, trackDrill.month, kpiType]);
+
+  /* Per-platform GRN% from GRN data (not shipment data) — for Platform GRN drilldown */
+  const grnPlatformRows = useMemo(() => {
+    if (kpiType !== 'grn') return [];
+    const byPlat = {};
+    grnRows.forEach(r => {
+      const p = String(r['Order Type'] || 'Unknown').trim() || 'Unknown';
+      if (!byPlat[p]) byPlat[p] = { platform: p, claims: 0, disp: 0, grn: 0, deficit: 0, recovered: 0 };
+      byPlat[p].claims++;
+      byPlat[p].disp += grnNum(r['Fulfilled/Dispatched Qty (in Units)']);
+      byPlat[p].grn += grnNum(r['GRN Qty (in Units)']);
+      byPlat[p].deficit += grnNum(r['Deficit Value']);
+      const sLow = String(r['Claim Status'] || '').toLowerCase();
+      const fLow = String(r['Claim Final Status'] || '').toLowerCase();
+      if (sLow.includes('cof issued') || sLow.includes('credit note issued') || fLow.includes('cof issued') || fLow.includes('credit note issued')) {
+        byPlat[p].recovered += grnNum(r['Deficit Value']);
+      }
+    });
+    return Object.values(byPlat)
+      .map(p => ({ ...p, grnPct: p.disp > 0 ? (p.grn / p.disp * 100) : null }))
+      .sort((a, b) => b.deficit - a.deficit);
+  }, [grnRows, kpiType]);
+
+  /* Ageing buckets from GRN data — for GRN Ageing drilldown */
+  const grnAgeing = useMemo(() => {
+    if (kpiType !== 'grn') return null;
+    const ref = (trackDrill.month && trackDrill.month !== 'rolling')
+      ? (() => {
+          const mIdx = MABBR_GRN.indexOf(trackDrill.month.slice(0, 3));
+          const mYr = parseInt('20' + trackDrill.month.slice(4)) || 2026;
+          const monthEnd = new Date(mYr, mIdx + 1, 0);
+          return monthEnd < new Date() ? monthEnd : new Date();
+        })()
+      : new Date();
+    const open = grnRows.filter(r => grnIsOpen(r['Claim Status']) && !grnIsRecovered(r['Claim Status'], r['Claim Final Status']));
+    const bkts = { '0-7d': { c: 0, v: 0 }, '8-15d': { c: 0, v: 0 }, '16-30d': { c: 0, v: 0 }, '31-60d': { c: 0, v: 0 }, '60+d': { c: 0, v: 0 }, 'N/A': { c: 0, v: 0 } };
+    open.forEach(r => {
+      const d = grnDate(r['Claim Date']);
+      const v = grnNum(r['Deficit Value']);
+      let bucket = 'N/A';
+      if (d) {
+        const days = Math.floor((ref - d) / 86400000);
+        if (days <= 7) bucket = '0-7d';
+        else if (days <= 15) bucket = '8-15d';
+        else if (days <= 30) bucket = '16-30d';
+        else if (days <= 60) bucket = '31-60d';
+        else bucket = '60+d';
+      }
+      bkts[bucket].c++;
+      bkts[bucket].v += v;
+    });
+    return { open: open.length, buckets: bkts };
+  }, [grnRows, kpiType, trackDrill.month]);
+
+  /* Holder breakdown (reuses page-level helper) */
+  const grnHolders = useMemo(() => kpiType === 'grn' ? grnHolderBreakdown(grnRows) : [], [grnRows, kpiType]);
+  const grnTotals = useMemo(() => grnHolders.reduce((a, h) => ({ deficit: a.deficit + h.deficit, recovered: a.recovered + h.recovered, claims: a.claims + h.claims }), { deficit: 0, recovered: 0, claims: 0 }), [grnHolders]);
 
   /* Apply in-modal scope filters */
   const dd = useMemo(() => {
@@ -1867,7 +1932,7 @@ function TrackDrillModal({ trackDrill, onClose, setTrackDrill, now }) {
             ...(isCost ? [{ k: 'outliers', l: 'Cost Outliers' }] : []),
             ...((isRto || isRtoAging) ? [{ k: 'reasons', l: 'RTO Reasons' }] : []),
             ...(isAgingType ? [{ k: 'aging', l: isRtoAging ? 'Oldest RTOs' : 'Aging List' }] : []),
-            { k: 'raw', l: `Raw Data (${dd.length})` },
+            { k: 'raw', l: `Raw Data (${kpiType === 'grn' ? grnRows.length : dd.length})` },
           ].map(t => (
             <button key={t.k} onClick={() => setTab(t.k)}
               className={`px-3 py-1.5 text-[10px] font-semibold rounded-t-md transition-colors ${tab === t.k ? tabActiveCls : 'text-gray-500 hover:text-gray-700'}`}>
@@ -2018,12 +2083,83 @@ function TrackDrillModal({ trackDrill, onClose, setTrackDrill, now }) {
               </div>
             </>)}
 
-            {isGrn && (
-              <div className="bg-gradient-to-br from-orange-50 to-amber-50 border border-orange-100 rounded-xl p-4">
-                <p className="text-[10px] uppercase tracking-wider text-orange-600 font-semibold mb-1">GRN KPI</p>
-                <p className="text-[11px] text-gray-700">GRN (Goods Receipt Note) recovery & ageing are tracked outside the shipment dataset. Use the value in the tracker; the Raw Data tab lists the month's shipments only for cross-reference.</p>
+            {isGrn && grnRows.length === 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+                <p className="text-[10px] uppercase tracking-wider text-amber-700 font-semibold mb-1">No GRN data for this scope</p>
+                <p className="text-[11px] text-gray-700">No GRN claim rows exist for <strong>{trackDrill.month || 'this period'}</strong>. The GRN Deficit Controller may not have records for this month yet.</p>
               </div>
             )}
+            {isGrn && grnRows.length > 0 && (() => {
+              const isRecoveryKPI = (trackDrill.kpiName || '').toLowerCase().includes('recovery');
+              const isAgeingKPI   = (trackDrill.kpiName || '').toLowerCase().includes('ageing') || (trackDrill.kpiName || '').toLowerCase().includes('aging');
+              const isPlatformKPI = (trackDrill.kpiName || '').toLowerCase().includes('platform');
+              const overallRecoveryPct = grnTotals.deficit > 0 ? (grnTotals.recovered / grnTotals.deficit * 100) : null;
+              return (
+                <div className="space-y-3">
+                  <div className="bg-gradient-to-br from-orange-50 to-amber-50 border border-orange-100 rounded-xl p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-[10px] uppercase tracking-wider text-orange-600 font-semibold">{trackDrill.kpiName} — live from GRN Deficit</p>
+                      <span className="text-[9px] text-gray-500 font-mono">{grnRows.length.toLocaleString('en-IN')} claim records · scope: {trackDrill.month || 'all'}</span>
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      <div><p className="text-[9px] text-gray-500">Claims</p><p className="text-2xl font-bold text-orange-700">{grnTotals.claims.toLocaleString('en-IN')}</p></div>
+                      <div><p className="text-[9px] text-gray-500">Total Deficit ₹</p><p className="text-xl font-bold text-red-700">₹{Math.round(grnTotals.deficit).toLocaleString('en-IN')}</p></div>
+                      <div><p className="text-[9px] text-gray-500">Recovered ₹</p><p className="text-xl font-bold text-emerald-700">₹{Math.round(grnTotals.recovered).toLocaleString('en-IN')}</p></div>
+                      <div><p className="text-[9px] text-gray-500">Overall Recovery %</p><p className="text-xl font-bold text-indigo-700">{overallRecoveryPct != null ? `${overallRecoveryPct.toFixed(1)}%` : '—'}</p></div>
+                    </div>
+                  </div>
+                  {isAgeingKPI && grnAgeing && (
+                    <div className="bg-white border border-orange-100 rounded-xl p-3">
+                      <p className="text-[10px] font-bold text-orange-700 uppercase mb-2 flex items-center gap-1"><Clock className="w-3 h-3" /> Open Claim Ageing — {grnAgeing.open.toLocaleString('en-IN')} open claims</p>
+                      <div className="space-y-1">
+                        {Object.entries(grnAgeing.buckets).filter(([_, v]) => v.c > 0).map(([b, v]) => {
+                          const max = Math.max(...Object.values(grnAgeing.buckets).map(x => x.v), 1);
+                          const w = v.v / max * 100;
+                          const color = b === '0-7d' ? '#10b981' : b === '8-15d' ? '#84cc16' : b === '16-30d' ? '#f59e0b' : b === '31-60d' ? '#f97316' : b === '60+d' ? '#dc2626' : '#9ca3af';
+                          return (
+                            <div key={b} className="flex items-center gap-2 text-[10px]">
+                              <span className="w-14 text-gray-700 font-semibold">{b}</span>
+                              <div className="flex-1 h-4 bg-gray-50 rounded overflow-hidden"><div className="h-full rounded transition-all flex items-center pr-1 justify-end" style={{ width: `${w}%`, background: color }}><span className="text-[9px] font-bold text-white">{v.c}</span></div></div>
+                              <span className="w-24 text-right text-gray-600 font-mono">₹{Math.round(v.v).toLocaleString('en-IN')}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                  {(isRecoveryKPI || isPlatformKPI || (!isAgeingKPI)) && (
+                    <div className="bg-white border border-orange-100 rounded-xl p-3 overflow-x-auto">
+                      <p className="text-[10px] font-bold text-orange-700 uppercase mb-2">Holder Breakdown {isRecoveryKPI && <span className="text-orange-500 normal-case font-normal">— only Logistics drives the KPI</span>}</p>
+                      <table className="w-full text-[10px]">
+                        <thead><tr className="bg-orange-50 border-b border-orange-200">
+                          <th className="px-2 py-1 text-left font-semibold text-orange-700">Holder</th>
+                          <th className="px-2 py-1 text-right font-semibold text-gray-600">Claims</th>
+                          <th className="px-2 py-1 text-right font-semibold text-red-700">Deficit ₹</th>
+                          <th className="px-2 py-1 text-right font-semibold text-emerald-700">Recovered ₹</th>
+                          <th className="px-2 py-1 text-right font-semibold text-amber-700">Pending ₹</th>
+                          <th className="px-2 py-1 text-right font-semibold text-indigo-700">Recovery %</th>
+                        </tr></thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {grnHolders.map(h => {
+                            const isLog = h.holder.toLowerCase() === 'logistics';
+                            return (
+                              <tr key={h.holder} className={isLog && isRecoveryKPI ? 'bg-orange-50/60 font-semibold' : ''}>
+                                <td className="px-2 py-1 text-gray-800">{h.holder}{isLog && isRecoveryKPI && <span className="ml-1 text-[8px] font-bold px-1 py-0.5 rounded bg-orange-500 text-white">KPI</span>}</td>
+                                <td className="px-2 py-1 text-right">{h.claims}</td>
+                                <td className="px-2 py-1 text-right text-red-600 font-mono">₹{Math.round(h.deficit).toLocaleString('en-IN')}</td>
+                                <td className="px-2 py-1 text-right text-emerald-600 font-mono">₹{Math.round(h.recovered).toLocaleString('en-IN')}</td>
+                                <td className="px-2 py-1 text-right text-amber-600 font-mono">₹{Math.round(h.pending).toLocaleString('en-IN')}</td>
+                                <td className="px-2 py-1 text-right font-bold" style={{ color: h.recoveryPct == null ? '#9ca3af' : h.recoveryPct >= 70 ? '#059669' : h.recoveryPct >= 40 ? '#d97706' : '#dc2626' }}>{h.recoveryPct == null ? '—' : `${h.recoveryPct.toFixed(1)}%`}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {isDispatch && dispatchStats && (<>
               <div className="bg-gradient-to-br from-cyan-50 to-blue-50 border border-cyan-100 rounded-xl p-4">
@@ -2076,15 +2212,76 @@ function TrackDrillModal({ trackDrill, onClose, setTrackDrill, now }) {
           </>)}
 
           {/* ─── BREAKDOWN TAB ─── */}
-          {tab === 'breakdown' && (
+          {tab === 'breakdown' && !isGrn && (
             <DimensionGrid
-              isCost={isCost} isRto={isRto || isRtoAging} isDel={isDel || isTransit || isPod || isAppt || isGrn || isDispatch || isManual || kpiType === 'general'}
+              isCost={isCost} isRto={isRto || isRtoAging} isDel={isDel || isTransit || isPod || isAppt || isDispatch || isManual || kpiType === 'general'}
               platArr={platArr} courArr={courArr} zoneArr={zoneArr}
               costColor={costColor} delColor={delColor}
               onPickPlatform={(p) => setScope(s => ({ ...s, platform: p }))}
               onPickCourier={(c) => setScope(s => ({ ...s, vendor: c }))}
               onPickZone={(z) => setScope(s => ({ ...s, zone: z }))}
             />
+          )}
+          {tab === 'breakdown' && isGrn && grnRows.length > 0 && (
+            <div className="space-y-3">
+              <div className="bg-white border border-orange-100 rounded-xl p-3 overflow-x-auto">
+                <p className="text-[10px] font-bold text-orange-700 uppercase mb-2 flex items-center gap-1"><Building2 className="w-3 h-3" /> Per-Platform GRN Performance <span className="text-orange-400 normal-case font-normal">(from GRN Deficit data, not shipment dataset)</span></p>
+                <table className="w-full text-[10px]">
+                  <thead><tr className="bg-orange-50 border-b border-orange-200">
+                    <th className="px-2 py-1 text-left font-semibold text-orange-700">Platform (Order Type)</th>
+                    <th className="px-2 py-1 text-right font-semibold text-gray-600">Claims</th>
+                    <th className="px-2 py-1 text-right font-semibold text-blue-700">Dispatched Qty</th>
+                    <th className="px-2 py-1 text-right font-semibold text-purple-700">GRN Qty</th>
+                    <th className="px-2 py-1 text-right font-semibold text-indigo-700">GRN %</th>
+                    <th className="px-2 py-1 text-right font-semibold text-red-700">Deficit ₹</th>
+                    <th className="px-2 py-1 text-right font-semibold text-emerald-700">Recovered ₹</th>
+                  </tr></thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {grnPlatformRows.map(p => (
+                      <tr key={p.platform} className="hover:bg-orange-50/30">
+                        <td className="px-2 py-1 text-gray-800 font-semibold">{p.platform}</td>
+                        <td className="px-2 py-1 text-right">{p.claims}</td>
+                        <td className="px-2 py-1 text-right text-blue-600 font-mono">{Math.round(p.disp).toLocaleString('en-IN')}</td>
+                        <td className="px-2 py-1 text-right text-purple-600 font-mono">{Math.round(p.grn).toLocaleString('en-IN')}</td>
+                        <td className="px-2 py-1 text-right font-bold" style={{ color: p.grnPct == null ? '#9ca3af' : p.grnPct >= 95 ? '#059669' : p.grnPct >= 85 ? '#d97706' : '#dc2626' }}>{p.grnPct == null ? '—' : `${p.grnPct.toFixed(1)}%`}</td>
+                        <td className="px-2 py-1 text-right text-red-600 font-mono">₹{Math.round(p.deficit).toLocaleString('en-IN')}</td>
+                        <td className="px-2 py-1 text-right text-emerald-600 font-mono">₹{Math.round(p.recovered).toLocaleString('en-IN')}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {/* Claim Status distribution */}
+              {(() => {
+                const byStatus = {};
+                grnRows.forEach(r => {
+                  const s = String(r['Claim Status'] || 'Unknown').trim() || 'Unknown';
+                  if (!byStatus[s]) byStatus[s] = { status: s, c: 0, v: 0 };
+                  byStatus[s].c++;
+                  byStatus[s].v += grnNum(r['Deficit Value']);
+                });
+                const rows = Object.values(byStatus).sort((a, b) => b.v - a.v);
+                const tot = rows.reduce((s, r) => s + r.v, 0) || 1;
+                return (
+                  <div className="bg-white border border-orange-100 rounded-xl p-3 overflow-x-auto">
+                    <p className="text-[10px] font-bold text-orange-700 uppercase mb-2">Claim Status Distribution</p>
+                    <table className="w-full text-[10px]">
+                      <thead><tr className="bg-orange-50 border-b border-orange-200">
+                        <th className="px-2 py-1 text-left font-semibold text-orange-700">Status</th>
+                        <th className="px-2 py-1 text-right font-semibold text-gray-600">Claims</th>
+                        <th className="px-2 py-1 text-right font-semibold text-red-700">Deficit ₹</th>
+                        <th className="px-2 py-1 text-right font-semibold text-gray-500">Share</th>
+                      </tr></thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {rows.map(r => (
+                          <tr key={r.status}><td className="px-2 py-1 text-gray-800">{r.status}</td><td className="px-2 py-1 text-right">{r.c}</td><td className="px-2 py-1 text-right text-red-600 font-mono">₹{Math.round(r.v).toLocaleString('en-IN')}</td><td className="px-2 py-1 text-right text-gray-500">{(r.v / tot * 100).toFixed(1)}%</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })()}
+            </div>
           )}
 
           {/* ─── COST OUTLIERS TAB ─── */}
@@ -2163,8 +2360,34 @@ function TrackDrillModal({ trackDrill, onClose, setTrackDrill, now }) {
           )}
 
           {/* ─── RAW DATA TAB ─── */}
-          {tab === 'raw' && (
+          {tab === 'raw' && !isGrn && (
             <DataTable data={dd} columns={cols} exportFilename={`${kpiType}-${trackDrill.month || 'drill'}${hasScope ? '-scoped' : ''}`} pageSize={25} />
+          )}
+          {tab === 'raw' && isGrn && (
+            <DataTable
+              data={grnRows}
+              columns={[
+                { key: 'Order Type', label: 'Platform' },
+                { key: 'Carrier/Shipping Partner', label: 'Courier' },
+                { key: 'WH', label: 'WH' },
+                { key: 'PO Number', label: 'PO' },
+                { key: 'Invoice Number', label: 'Invoice' },
+                { key: 'AWB Number', label: 'AWB' },
+                { key: 'SKU Code', label: 'SKU' },
+                { key: 'Fulfilled/Dispatched Qty (in Units)', label: 'Disp Qty', render: v => grnNum(v) },
+                { key: 'GRN Qty (in Units)', label: 'GRN Qty', render: v => grnNum(v) },
+                { key: 'Deficit Unit', label: 'Deficit U', render: v => grnNum(v) },
+                { key: 'Deficit Value', label: 'Deficit ₹', render: v => `₹${Math.round(grnNum(v)).toLocaleString('en-IN')}` },
+                { key: 'Claim Holder', label: 'Holder' },
+                { key: 'Claim Status', label: 'Status' },
+                { key: 'Claim Final Status', label: 'Final Status' },
+                { key: 'GRN Remarks', label: 'Remarks' },
+                { key: 'Claim Date', label: 'Claim Date', render: v => v ? formatDate(v) : '-' },
+                { key: 'Delivery Date', label: 'Delivery', render: v => v ? formatDate(v) : '-' },
+              ]}
+              exportFilename={`grn-${trackDrill.month || 'drill'}`}
+              pageSize={25}
+            />
           )}
         </div>
       </div>
