@@ -1350,12 +1350,95 @@ export default function OKR() {
 
         /* expTrackMonth state is at component top level */
 
+        /* Snapshot every currently-visible AUTO cell into trackingData so the displayed numbers
+           are frozen — future live-data changes won't move them. Marks each touched month locked. */
+        const lockAllVisible = () => {
+          const ownerFilter = owner === 'all' ? null : owner;
+          const newTrack = { ...trackingData };
+          const newLocks = { ...lockedMonths };
+          const monthsTouched = new Set();
+          let frozenCount = 0;
+          kpis.forEach(k => {
+            const tO = owner === 'all' ? k._owner : owner;
+            if (ownerFilter && tO !== ownerFilter && owner !== 'all') return;
+            MONTHS_LIST.forEach(m => {
+              const key = `${tO}||${m}||${k.name}`;
+              const av = autoActuals[m]?.[k.name];
+              /* Only freeze if there's an auto value AND no manual override exists yet */
+              if (av != null && isFinite(av) && (newTrack[key] == null || newTrack[key] === '')) {
+                newTrack[key] = String(av);
+                monthsTouched.add(`${tO}||${m}`);
+                frozenCount++;
+              }
+            });
+          });
+          monthsTouched.forEach(k => { newLocks[k] = true; });
+          setTrackingData(newTrack);
+          setLockedMonths(newLocks);
+          localStorage.setItem('okr-track', JSON.stringify(newTrack));
+          localStorage.setItem('okr-lock', JSON.stringify(newLocks));
+          if (frozenCount === 0) {
+            alert('Nothing to lock — all visible cells already have manual values or are empty.');
+          } else {
+            alert(`Locked ${frozenCount} value${frozenCount === 1 ? '' : 's'} across ${monthsTouched.size} month-owner combinations. These numbers are now frozen and won't change when live data updates.`);
+          }
+        };
+
+        /* Reverse: clear manual snapshots for the current owner scope so cells go back to live AUTO */
+        const unlockAllVisible = () => {
+          if (!confirm('Restore all locked cells back to live (auto) values? This will clear the frozen snapshots for the current owner view.')) return;
+          const newTrack = { ...trackingData };
+          const newLocks = { ...lockedMonths };
+          let cleared = 0;
+          kpis.forEach(k => {
+            const tO = owner === 'all' ? k._owner : owner;
+            MONTHS_LIST.forEach(m => {
+              const key = `${tO}||${m}||${k.name}`;
+              const av = autoActuals[m]?.[k.name];
+              /* Only clear if a manual override matches an auto-derivable value (i.e., a snapshot we wrote).
+                 If user typed a custom value (no auto present), leave it alone. */
+              if (newTrack[key] != null && newTrack[key] !== '' && av != null) {
+                delete newTrack[key];
+                cleared++;
+              }
+              if (newLocks[`${tO}||${m}`]) newLocks[`${tO}||${m}`] = false;
+            });
+          });
+          setTrackingData(newTrack);
+          setLockedMonths(newLocks);
+          localStorage.setItem('okr-track', JSON.stringify(newTrack));
+          localStorage.setItem('okr-lock', JSON.stringify(newLocks));
+          alert(`Cleared ${cleared} frozen snapshot${cleared === 1 ? '' : 's'}. Cells now reflect live data again.`);
+        };
+
+        const visibleLockedCount = kpis.reduce((acc, k) => {
+          const tO = owner === 'all' ? k._owner : owner;
+          return acc + MONTHS_LIST.filter(m => {
+            const key = `${tO}||${m}||${k.name}`;
+            const av = autoActuals[m]?.[k.name];
+            return trackingData[key] != null && trackingData[key] !== '' && av != null;
+          }).length;
+        }, 0);
+
         return (
         <div className="space-y-4">
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-100">
-            <h3 className="text-sm font-semibold text-gray-700">{period} Tracking — {owner === 'all' ? 'All Owners' : cur?.name}</h3>
-            <p className="text-[10px] text-gray-400"><span className="text-[8px] font-bold px-1 py-0.5 rounded bg-emerald-100 text-emerald-700">AUTO</span> rows auto-fill from shipment data · <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-gray-200 text-gray-600">MANUAL</span> rows are blank until you enter verified values. Edit any cell, then lock the month.</p>
+          <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-700">{period} Tracking — {owner === 'all' ? 'All Owners' : cur?.name}</h3>
+              <p className="text-[10px] text-gray-400"><span className="text-[8px] font-bold px-1 py-0.5 rounded bg-emerald-100 text-emerald-700">AUTO</span> rows auto-fill from shipment data · <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-gray-200 text-gray-600">MANUAL</span> rows are blank until you enter verified values. Edit any cell, then lock the month.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              {visibleLockedCount > 0 && <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold flex items-center gap-1"><Lock className="w-3 h-3" /> {visibleLockedCount} frozen</span>}
+              <button onClick={lockAllVisible} className="text-[10px] px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-semibold flex items-center gap-1 shadow-sm" title="Snapshot every currently-visible number so it stops changing when live data updates">
+                <Lock className="w-3 h-3" /> Lock All Current Values
+              </button>
+              {visibleLockedCount > 0 && (
+                <button onClick={unlockAllVisible} className="text-[10px] px-3 py-1.5 bg-white hover:bg-gray-50 text-gray-700 border border-gray-300 rounded-lg font-semibold flex items-center gap-1" title="Clear frozen snapshots — cells will reflect live data again">
+                  <Unlock className="w-3 h-3" /> Unlock All
+                </button>
+              )}
+            </div>
           </div>
           <div className="overflow-x-auto"><table className="w-full text-[10px]">
             <thead><tr className="bg-gray-50 border-b border-gray-200">
