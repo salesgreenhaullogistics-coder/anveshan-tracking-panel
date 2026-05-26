@@ -177,6 +177,26 @@ function grnFilterByMonth(rows, monthStr) {
     return d && d.getFullYear() === mYr && d.getMonth() === mIdx;
   });
 }
+/* Holder-level breakdown: total Deficit ₹, Recovered ₹, Recovery % per Claim Holder.
+   Used by the GRN Recovery % KPI drilldown so users see why Logistics number is what it is. */
+function grnHolderBreakdown(rows) {
+  const byHolder = {};
+  (rows || []).forEach(r => {
+    const h = String(r['Claim Holder'] || '').trim() || 'Unknown';
+    if (!byHolder[h]) byHolder[h] = { holder: h, claims: 0, deficit: 0, recovered: 0 };
+    byHolder[h].claims++;
+    byHolder[h].deficit += grnNum(r['Deficit Value']);
+    const sLow = String(r['Claim Status'] || '').toLowerCase();
+    const fLow = String(r['Claim Final Status'] || '').toLowerCase();
+    if (sLow.includes('cof issued') || sLow.includes('credit note issued') || fLow.includes('cof issued') || fLow.includes('credit note issued')) {
+      byHolder[h].recovered += grnNum(r['Deficit Value']);
+    }
+  });
+  return Object.values(byHolder)
+    .map(h => ({ ...h, recoveryPct: h.deficit > 0 ? (h.recovered / h.deficit * 100) : null, pending: h.deficit - h.recovered }))
+    .sort((a, b) => b.deficit - a.deficit);
+}
+
 /* "Claim received from logistics" = COF Issued OR Credit Note Issued (in either Claim Status or Claim Final Status) */
 const grnIsClaimReceived = (status, finalStatus) => {
   const check = v => {
@@ -865,10 +885,84 @@ export default function OKR() {
             const k = kpis.find(x => x.name === expKPI);
             if (!k) return null;
             const gap = kpiGap(k);
-            if (gap == null) return <div className="bg-gray-50 border border-gray-200 rounded-xl p-4"><p className="text-[11px] text-gray-600 font-semibold flex items-center gap-2"><AlertTriangle className="w-4 h-4" /> {k.name} has no live data{k.src === 'manual' ? ' — enter the value in Monthly Tracking to track it.' : ' for the selected month.'}</p></div>;
-            if (gap <= 0) return <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4"><p className="text-[11px] text-emerald-700 font-semibold flex items-center gap-2"><CheckCircle className="w-4 h-4" /> {k.name} is on target. No action required.</p></div>;
+
+            /* GRN Recovery % — holder-level breakdown (always shown when expanded, regardless of gap) */
+            const isGRNRecovery = k.name === 'GRN Recovery %';
+            const grnScopedRows = isGRNRecovery
+              ? (kpiMonth === 'rolling' ? grnRaw : grnFilterByMonth(grnRaw, kpiMonth))
+              : null;
+            const holderRows = isGRNRecovery ? grnHolderBreakdown(grnScopedRows) : null;
+            const grnTotals = holderRows ? holderRows.reduce((a, h) => ({ deficit: a.deficit + h.deficit, recovered: a.recovered + h.recovered, claims: a.claims + h.claims }), { deficit: 0, recovered: 0, claims: 0 }) : null;
+            const grnPanel = isGRNRecovery && holderRows && holderRows.length > 0 ? (
+              <div className="bg-white rounded-xl shadow-sm border border-orange-200 p-4">
+                <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                  <div>
+                    <h3 className="text-sm font-bold text-orange-800 flex items-center gap-2"><FileText className="w-4 h-4" /> GRN Recovery — Holder Breakdown</h3>
+                    <p className="text-[10px] text-gray-500 mt-0.5">
+                      Scope: <span className="font-semibold text-orange-700">{kpiMonth === 'rolling' ? 'All time' : kpiMonth}</span> ·
+                      Logistics-held deficit drives the KPI. Other holders shown for context.
+                    </p>
+                  </div>
+                  <div className="text-right text-[10px]">
+                    <p className="text-gray-500">Total claims: <span className="font-bold text-gray-700">{grnTotals.claims.toLocaleString('en-IN')}</span></p>
+                    <p className="text-gray-500">Total deficit: <span className="font-bold text-red-700">₹{Math.round(grnTotals.deficit).toLocaleString('en-IN')}</span></p>
+                    <p className="text-gray-500">Total recovered: <span className="font-bold text-emerald-700">₹{Math.round(grnTotals.recovered).toLocaleString('en-IN')}</span></p>
+                  </div>
+                </div>
+                <div className="overflow-x-auto"><table className="w-full text-[11px]">
+                  <thead><tr className="bg-orange-50 border-b border-orange-200">
+                    <th className="px-3 py-2 text-left font-semibold text-orange-700">Holder</th>
+                    <th className="px-3 py-2 text-right font-semibold text-orange-700">Claims</th>
+                    <th className="px-3 py-2 text-right font-semibold text-red-700">Deficit ₹</th>
+                    <th className="px-3 py-2 text-right font-semibold text-emerald-700">Recovered ₹</th>
+                    <th className="px-3 py-2 text-right font-semibold text-amber-700">Pending ₹</th>
+                    <th className="px-3 py-2 text-right font-semibold text-indigo-700">Recovery %</th>
+                    <th className="px-3 py-2 text-right font-semibold text-gray-500">% of Total Deficit</th>
+                  </tr></thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {holderRows.map(h => {
+                      const isLogistics = h.holder.toLowerCase() === 'logistics';
+                      const shareOfDeficit = grnTotals.deficit > 0 ? (h.deficit / grnTotals.deficit * 100) : 0;
+                      return (
+                        <tr key={h.holder} className={isLogistics ? 'bg-orange-50/60 font-semibold' : 'hover:bg-gray-50'}>
+                          <td className="px-3 py-2 text-gray-800">
+                            {h.holder}
+                            {isLogistics && <span className="ml-2 text-[8px] font-bold px-1 py-0.5 rounded bg-orange-500 text-white">DRIVES KPI</span>}
+                          </td>
+                          <td className="px-3 py-2 text-right text-gray-600">{h.claims.toLocaleString('en-IN')}</td>
+                          <td className="px-3 py-2 text-right text-red-600 font-mono">₹{Math.round(h.deficit).toLocaleString('en-IN')}</td>
+                          <td className="px-3 py-2 text-right text-emerald-600 font-mono">₹{Math.round(h.recovered).toLocaleString('en-IN')}</td>
+                          <td className="px-3 py-2 text-right text-amber-600 font-mono">₹{Math.round(h.pending).toLocaleString('en-IN')}</td>
+                          <td className="px-3 py-2 text-right font-bold" style={{ color: h.recoveryPct == null ? '#9ca3af' : h.recoveryPct >= 70 ? '#059669' : h.recoveryPct >= 40 ? '#d97706' : '#dc2626' }}>
+                            {h.recoveryPct == null ? '—' : `${h.recoveryPct.toFixed(1)}%`}
+                          </td>
+                          <td className="px-3 py-2 text-right text-gray-500">{shareOfDeficit.toFixed(1)}%</td>
+                        </tr>
+                      );
+                    })}
+                    <tr className="bg-gray-50 border-t-2 border-gray-300 font-bold">
+                      <td className="px-3 py-2 text-gray-700">Total</td>
+                      <td className="px-3 py-2 text-right">{grnTotals.claims.toLocaleString('en-IN')}</td>
+                      <td className="px-3 py-2 text-right text-red-700 font-mono">₹{Math.round(grnTotals.deficit).toLocaleString('en-IN')}</td>
+                      <td className="px-3 py-2 text-right text-emerald-700 font-mono">₹{Math.round(grnTotals.recovered).toLocaleString('en-IN')}</td>
+                      <td className="px-3 py-2 text-right text-amber-700 font-mono">₹{Math.round(grnTotals.deficit - grnTotals.recovered).toLocaleString('en-IN')}</td>
+                      <td className="px-3 py-2 text-right text-indigo-700">{grnTotals.deficit > 0 ? `${(grnTotals.recovered / grnTotals.deficit * 100).toFixed(1)}%` : '—'}</td>
+                      <td className="px-3 py-2 text-right text-gray-600">100.0%</td>
+                    </tr>
+                  </tbody>
+                </table></div>
+                <p className="text-[10px] text-gray-500 mt-2">
+                  <strong>Note:</strong> KPI value (<span className="font-bold text-orange-700">{k.actual?.toFixed(1)}%</span>) is calculated <em>only</em> from the Logistics-held row.
+                  Other holders are visible here for visibility but don't affect this KPI.
+                </p>
+              </div>
+            ) : null;
+
+            if (gap == null) return <>{grnPanel}<div className="bg-gray-50 border border-gray-200 rounded-xl p-4 mt-3"><p className="text-[11px] text-gray-600 font-semibold flex items-center gap-2"><AlertTriangle className="w-4 h-4" /> {k.name} has no live data{k.src === 'manual' ? ' — enter the value in Monthly Tracking to track it.' : ' for the selected month.'}</p></div></>;
+            if (gap <= 0) return <>{grnPanel}<div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 mt-3"><p className="text-[11px] text-emerald-700 font-semibold flex items-center gap-2"><CheckCircle className="w-4 h-4" /> {k.name} is on target. No action required.</p></div></>;
             const actionPlan = getActionPlanFor(k, cur?.name);
-            return (
+            return (<>
+              {grnPanel && <div className="mb-3">{grnPanel}</div>}
               <div className="bg-white rounded-xl shadow-sm border border-indigo-200 p-4">
                 <div className="flex items-center justify-between mb-3">
                   <div>
@@ -901,7 +995,7 @@ export default function OKR() {
                   </tbody>
                 </table></div>
               </div>
-            );
+            </>);
           })()}
         </div>
         {/* Trend */}
