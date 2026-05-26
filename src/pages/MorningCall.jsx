@@ -18,7 +18,25 @@ const today = (() => { const d = new Date(); return new Date(d.getFullYear(), d.
 const yesterday = new Date(today.getTime() - ONE_DAY);
 const num = (v) => { const n = parseFloat(v); return isFinite(n) ? n : 0; };
 const txt = (v, fb = '') => { const s = String(v == null ? '' : v).replace(/\s+/g, ' ').trim(); return s || fb; };
-const safeDate = (v) => { if (!v) return null; const d = new Date(v); return isNaN(d) ? null : new Date(d.getFullYear(), d.getMonth(), d.getDate()); };
+/* Parse dates day-first (Indian D/M/Y). JS `new Date('1/6/2026')` wrongly reads
+   that as Jan 6 (US M/D); the sheet means 1 June. Handle ISO and D-M-Y explicitly. */
+const safeDate = (v) => {
+  if (v == null || v === '') return null;
+  if (v instanceof Date) return isNaN(v) ? null : new Date(v.getFullYear(), v.getMonth(), v.getDate());
+  const s = String(v).trim();
+  if (!s) return null;
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/); /* ISO YYYY-MM-DD */
+  if (m) { const y = +m[1], mo = +m[2], d = +m[3]; if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) return new Date(y, mo - 1, d); }
+  m = s.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})/); /* D/M/Y, D-M-Y, D.M.Y */
+  if (m) {
+    let d = +m[1], mo = +m[2], y = +m[3]; if (y < 100) y += 2000;
+    if (mo > 12 && d <= 12) { const t = d; d = mo; mo = t; } /* clearly M/D — swap */
+    if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) return new Date(y, mo - 1, d);
+    return null;
+  }
+  const dd = new Date(s); /* fallback: "06 Feb 2026", ISO datetime, etc. */
+  return isNaN(dd) ? null : new Date(dd.getFullYear(), dd.getMonth(), dd.getDate());
+};
 const dDiff = (a, b) => { if (!a || !b) return null; return Math.max(0, Math.floor((a - b) / ONE_DAY)); };
 const isPendingApptText = (s) => {
   const c = String(s || '').toLowerCase().trim();
@@ -38,6 +56,16 @@ const isDeliveredStatus = (s) => {
 const isPartialDelivered = (s) => {
   const c = String(s || '').toLowerCase().trim();
   return /partial.*deliver|partially.*deliver/.test(c);
+};
+/* 3PL / fulfilment platforms excluded from PO-expiry tracking. */
+const EXPIRY_EXCLUDE_PLATFORMS = /flipkart\s*stn|emiza|prozo/i;
+/* In-transit / still-in-pipeline = not delivered and not cancelled/RTO. */
+const isInTransitStatus = (s) => {
+  const c = String(s || '').toLowerCase().trim();
+  if (!c) return false;
+  if (isDeliveredStatus(s)) return false;
+  if (/\b(cancel|cancelled|canceled|rto|returned|return to origin)\b/.test(c)) return false;
+  return true;
 };
 const ageBucket = (a) => {
   if (a == null || !isFinite(a)) return 'Age NA';
@@ -85,6 +113,11 @@ export default function MorningCall() {
           const apptPending = !apptDate && isPendingApptText(apptRaw);
           const age = dispDate ? dDiff(today, dispDate) : null;
           const ageLeftRaw = num(r['Age left'] ?? r['Age Left']);
+          const appt1D = safeDate(r['1st Appointment']);
+          const appt2D = safeDate(r['2nd Appointment']);
+          const appt3D = safeDate(r['3rd Appointment']);
+          const apptDArr = [appt1D, appt2D, appt3D].filter(Boolean);
+          const latestApptD = apptDArr.length ? new Date(Math.max(...apptDArr.map(d => d.getTime()))) : null;
           return {
             _i: i,
             po: txt(r['PO Number/Order No']),
@@ -120,6 +153,10 @@ export default function MorningCall() {
             appt1: txt(r['1st Appointment']),
             appt2: txt(r['2nd Appointment']),
             appt3: txt(r['3rd Appointment']),
+            appt1Date: appt1D, appt2Date: appt2D, appt3Date: appt3D,
+            latestApptDate: latestApptD,
+            latestApptStr: latestApptD ? formatDate(latestApptD) : 'NA',
+            isInTransit: isInTransitStatus(status),
           };
         });
         setRaw(enriched);
@@ -255,6 +292,37 @@ export default function MorningCall() {
     });
     const expiryByPlat = (arr) => groupByKey(arr, r => r.platform);
 
+    /* Expired / expiring-today, in-transit. Excludes 3PL platforms, and excludes
+       already-expired POs that have a today/future appointment — those belong in
+       the Expiry Change tab, not here. */
+    const expiredInTransit = [];
+    const expiringTodayInTransit = [];
+    data.forEach(r => {
+      if (!r.poExpiryDate || !r.isInTransit) return;
+      if (EXPIRY_EXCLUDE_PLATFORMS.test(r.platform)) return;
+      const t = r.poExpiryDate.getTime();
+      const futureAppt = r.latestApptDate && r.latestApptDate.getTime() >= today.getTime();
+      if (t < today.getTime()) {
+        if (futureAppt) return; /* shown in Expiry Change instead */
+        expiredInTransit.push(r);
+      } else if (t === today.getTime()) {
+        expiringTodayInTransit.push(r);
+      }
+    });
+    const expiredByPlat = groupByKey(expiredInTransit, r => r.platform);
+    const expiringTodayByPlat = groupByKey(expiringTodayInTransit, r => r.platform);
+
+    /* Expiry-date-change needed on Filflo: the PO has ALREADY expired
+       (expiry < today) but a booked appointment (1st/2nd/3rd) is today or in the
+       future — so the expiry must be extended. Same 3PL platforms excluded. */
+    const expiryChange = data.filter(r =>
+      r.poExpiryDate && r.latestApptDate && !r.isDelivered &&
+      !EXPIRY_EXCLUDE_PLATFORMS.test(r.platform) &&
+      r.poExpiryDate.getTime() < today.getTime() &&
+      r.latestApptDate.getTime() >= today.getTime()
+    ).sort((a, b) => b.value - a.value);
+    const expiryChangeByPlat = groupByKey(expiryChange, r => r.platform);
+
     /* Table 13a: Pending appt ageing by platform */
     const pendingApptAgeing = {};
     pendingAppt.forEach(r => {
@@ -364,6 +432,8 @@ export default function MorningCall() {
       dateWise, yesterdayBucket, todayApptRows, dispatchTodayRows, dispatchYesterdayRows,
       todayApptByPlatform, dispatchTodayByPlatform, dispatchYesterdayByPlatform, overallByPlatform, yesterdayDeliveredByPlatform,
       expiry, expiryByPlatAfter: expiryByPlat(expiry.after), expiryByPlatOn: expiryByPlat(expiry.on), expiryByPlatBefore: expiryByPlat(expiry.before),
+      expiredInTransit, expiringTodayInTransit, expiredByPlat, expiringTodayByPlat,
+      expiryChange, expiryChangeByPlat,
       pendingApptAgeingArr,
       zoneArrY, firstAttemptYesterday, failureArr,
       transitImpact, proofArr, missingProofAll,
@@ -511,6 +581,8 @@ export default function MorningCall() {
           { k: 'overview', l: 'Executive Snapshot', icon: BarChart3 },
           { k: 'ageing', l: 'Ageing & Appointment', icon: Clock },
           { k: 'delivery', l: 'Delivery & Expiry', icon: CheckCircle },
+          { k: 'expired', l: 'Expired POs', icon: Flame },
+          { k: 'expirychange', l: 'Expiry Change (Filflo)', icon: Calendar },
           { k: 'dispatch', l: 'Dispatch & Destination', icon: Truck },
           { k: 'insights', l: 'Smart Insights', icon: Brain },
           { k: 'raw', l: `Raw Data (${data.length})`, icon: Database },
@@ -530,6 +602,12 @@ export default function MorningCall() {
 
       {/* ═══ DELIVERY & EXPIRY TAB ═══ */}
       {tab === 'delivery' && <DeliveryTab stats={stats} openDrill={openDrill} />}
+
+      {/* ═══ EXPIRED POs TAB ═══ */}
+      {tab === 'expired' && <ExpiredTab stats={stats} openDrill={openDrill} />}
+
+      {/* ═══ EXPIRY CHANGE (FILFLO) TAB ═══ */}
+      {tab === 'expirychange' && <ExpiryChangeTab stats={stats} openDrill={openDrill} />}
 
       {/* ═══ DISPATCH & DESTINATION TAB ═══ */}
       {tab === 'dispatch' && <DispatchTab stats={stats} openDrill={openDrill} />}
@@ -923,6 +1001,119 @@ function DeliveryTab({ stats, openDrill }) {
           </table></div>
         </Section>
       </div>
+    </div>
+  );
+}
+
+/* ─── Platform breakdown table (reusable) ──────────────────────────── */
+function PlatTable({ arr, onPick, prefix, accentClass = 'text-gray-700', hoverClass = 'hover:bg-gray-50' }) {
+  if (!arr || !arr.length) return <div className="p-4 text-center text-[11px] text-gray-400">None</div>;
+  return (
+    <table className="w-full text-[10px]">
+      <thead><tr className="bg-gray-50"><th className="px-2 py-1 text-left text-gray-500">Platform</th><th className="px-2 py-1 text-right text-gray-500">Count</th><th className="px-2 py-1 text-right text-gray-500">Value</th></tr></thead>
+      <tbody className="divide-y divide-gray-50">
+        {arr.map(p => (
+          <tr key={p.key} onClick={() => onPick(`${prefix}: ${p.key}`, p.rows)} className={`${hoverClass} cursor-pointer`}>
+            <td className="px-2 py-1">{p.key}</td>
+            <td className={`px-2 py-1 text-right font-bold ${accentClass}`}>{p.count}</td>
+            <td className="px-2 py-1 text-right font-mono">{currency(p.value)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+/* ─── EXPIRED POs TAB ──────────────────────────────────────────────── */
+function ExpiredTab({ stats, openDrill }) {
+  const exp = stats.expiredInTransit, todayExp = stats.expiringTodayInTransit;
+  const expVal = exp.reduce((s, r) => s + r.value, 0);
+  const todayVal = todayExp.reduce((s, r) => s + r.value, 0);
+  const cols = [
+    { key: 'po', label: 'PO' }, { key: 'platform', label: 'Platform' }, { key: 'status', label: 'Status' },
+    { key: 'poExpiryStr', label: 'PO Expiry' }, { key: 'age', label: 'Age (d)' },
+    { key: 'destination', label: 'Destination' }, { key: 'vendor', label: 'Vendor' },
+    { key: 'value', label: 'Value', render: v => currency(num(v)) },
+  ];
+  return (
+    <div className="space-y-3">
+      <div className="bg-rose-50 border border-rose-200 rounded-xl px-4 py-2.5 text-[11px] text-rose-700">
+        Expired / expiring <strong>in-transit</strong> POs with <strong>no upcoming appointment</strong>. POs that already expired but have a today/future appointment are shown in <strong>Expiry Change (Filflo)</strong>. Flipkart STN, Emiza &amp; Prozo are excluded.
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <button onClick={() => openDrill('Already expired (in-transit)', exp)} className="text-left"><KPICard title="Already Expired" value={exp.length} icon={Flame} color="red" subtitle={currency(expVal)} /></button>
+        <button onClick={() => openDrill('Expiring today (in-transit)', todayExp)} className="text-left"><KPICard title="Expiring Today" value={todayExp.length} icon={AlertTriangle} color="yellow" subtitle={currency(todayVal)} /></button>
+        <KPICard title="Total At-Risk" value={exp.length + todayExp.length} icon={Clock} color="orange" subtitle={currency(expVal + todayVal)} />
+        <KPICard title="Platforms Affected" value={new Set([...exp, ...todayExp].map(r => r.platform)).size} icon={Layers} color="purple" />
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <Section title="Already Expired — by Platform" icon={Flame} accent="red" sub={`${exp.length} POs`}>
+          <PlatTable arr={stats.expiredByPlat} onPick={openDrill} prefix="Expired" accentClass="text-red-700" hoverClass="hover:bg-red-50/40" />
+        </Section>
+        <Section title="Expiring Today — by Platform" icon={AlertTriangle} accent="yellow" sub={`${todayExp.length} POs`}>
+          <PlatTable arr={stats.expiringTodayByPlat} onPick={openDrill} prefix="Expiring today" accentClass="text-amber-700" hoverClass="hover:bg-yellow-50/40" />
+        </Section>
+      </div>
+      <Section title="Already Expired — full list" icon={Flame} accent="red" sub={`${exp.length} POs`}>
+        <div className="p-3"><DataTable data={exp} columns={cols} pageSize={25} exportFilename="expired-pos" emptyMessage="No expired in-transit POs." /></div>
+      </Section>
+      {todayExp.length > 0 && (
+        <Section title="Expiring Today — full list" icon={AlertTriangle} accent="yellow" sub={`${todayExp.length} POs`}>
+          <div className="p-3"><DataTable data={todayExp} columns={cols} pageSize={25} exportFilename="expiring-today-pos" /></div>
+        </Section>
+      )}
+    </div>
+  );
+}
+
+/* ─── EXPIRY CHANGE (FILFLO) TAB ───────────────────────────────────── */
+function ExpiryChangeTab({ stats, openDrill }) {
+  const list = stats.expiryChange;
+  const val = list.reduce((s, r) => s + r.value, 0);
+  return (
+    <div className="space-y-3">
+      <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-2.5 text-[11px] text-indigo-700">
+        POs that have <strong>already expired</strong> (PO expiry before today) but have a <strong>today/future appointment</strong> booked. Action: <strong>change the expiry date on Filflo</strong> to at least the latest appointment date so the PO isn't rejected.
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <button onClick={() => openDrill('Expiry change needed (Filflo)', list)} className="text-left"><KPICard title="Need Expiry Change" value={list.length} icon={Calendar} color="indigo" subtitle={currency(val)} /></button>
+        <KPICard title="Platforms" value={new Set(list.map(r => r.platform)).size} icon={Layers} color="purple" />
+        <KPICard title="At-Risk Value" value={currency(val)} icon={IndianRupee} color="orange" />
+      </div>
+      <Section title="By Platform" icon={Calendar} accent="indigo" sub={`${list.length} POs`}>
+        <PlatTable arr={stats.expiryChangeByPlat} onPick={openDrill} prefix="Expiry change" accentClass="text-indigo-700" hoverClass="hover:bg-indigo-50/40" />
+      </Section>
+      <Section title="POs needing expiry-date change on Filflo" icon={Calendar} accent="indigo" sub={`${list.length} POs`}>
+        <div className="overflow-x-auto max-h-[560px] overflow-y-auto"><table className="w-full text-[10px]">
+          <thead className="sticky top-0 bg-gray-50"><tr>
+            <th className="px-2 py-1 text-left text-gray-500">PO</th>
+            <th className="px-2 py-1 text-left text-gray-500">Platform</th>
+            <th className="px-2 py-1 text-left text-gray-500">Status</th>
+            <th className="px-2 py-1 text-left text-gray-500">PO Expiry</th>
+            <th className="px-2 py-1 text-left text-gray-500">1st Appt</th>
+            <th className="px-2 py-1 text-left text-gray-500">2nd Appt</th>
+            <th className="px-2 py-1 text-left text-gray-500">3rd Appt</th>
+            <th className="px-2 py-1 text-left text-emerald-600">Set Expiry &ge;</th>
+            <th className="px-2 py-1 text-right text-gray-500">Value</th>
+          </tr></thead>
+          <tbody className="divide-y divide-gray-50">
+            {list.map(r => (
+              <tr key={r._i} className="hover:bg-indigo-50/30">
+                <td className="px-2 py-1 font-medium">{r.po}</td>
+                <td className="px-2 py-1">{r.platform}</td>
+                <td className="px-2 py-1">{r.status}</td>
+                <td className="px-2 py-1 text-red-600 font-semibold">{r.poExpiryStr}</td>
+                <td className="px-2 py-1">{r.appt1Date ? formatDate(r.appt1Date) : (r.appt1 || '—')}</td>
+                <td className="px-2 py-1">{r.appt2Date ? formatDate(r.appt2Date) : (r.appt2 || '—')}</td>
+                <td className="px-2 py-1">{r.appt3Date ? formatDate(r.appt3Date) : (r.appt3 || '—')}</td>
+                <td className="px-2 py-1 text-emerald-700 font-bold">{r.latestApptStr}</td>
+                <td className="px-2 py-1 text-right font-mono">{currency(r.value)}</td>
+              </tr>
+            ))}
+            {list.length === 0 && <tr><td colSpan={9} className="px-2 py-4 text-center text-gray-400">No POs need an expiry change right now.</td></tr>}
+          </tbody>
+        </table></div>
+      </Section>
     </div>
   );
 }
