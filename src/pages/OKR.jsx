@@ -522,11 +522,59 @@ export default function OKR() {
       return { month, total: rows.length, delPct: percent(d, rows.length), rtoPct: percent(rt, rows.length) };
     });
 
+    /* ─── Anoop's First-Mile / Dispatch metrics — derived from shipment dates ─── */
+    const booked     = recent.filter(r => safeParseDate(r.bookingDate));
+    const dispatched = recent.filter(r => safeParseDate(r.bookingDate) && safeParseDate(r.dispatchDate || r.bookingDate));
+    /* "Dispatched" = has both booking + dispatch date (or, when dispatchDate column absent, any record that left the warehouse i.e. is no longer just-booked). */
+    const dispatchedReal = recent.filter(r => safeParseDate(r.dispatchDate)) ;
+    const bookedCount = booked.length;
+    const dispatchedCount = dispatchedReal.length || dispatched.length;
+
+    /* Dispatch ageing buckets: days from booking to dispatch (or booking to refDate if not yet dispatched) */
+    const dispatchAgeBkts = { '0-2': 0, '2-5': 0, '5-10': 0, '10-20': 0, '20+': 0 };
+    dispatchedReal.forEach(r => {
+      const bd = safeParseDate(r.bookingDate), dd = safeParseDate(r.dispatchDate);
+      if (!bd || !dd) return;
+      const age = Math.floor((dd - bd) / 86400000);
+      if (age <= 2) dispatchAgeBkts['0-2']++;
+      else if (age <= 5) dispatchAgeBkts['2-5']++;
+      else if (age <= 10) dispatchAgeBkts['5-10']++;
+      else if (age <= 20) dispatchAgeBkts['10-20']++;
+      else dispatchAgeBkts['20+']++;
+    });
+    const dispAgeTotal = dispatchedReal.length || 1;
+    const dispatchAgePcts = {};
+    for (const [k, v] of Object.entries(dispatchAgeBkts)) dispatchAgePcts[k] = percent(v, dispAgeTotal);
+
+    /* Plan compliance proxy: dispatched within 0-2 days of booking */
+    const dispatchSameDay = dispatchedReal.filter(r => {
+      const bd = safeParseDate(r.bookingDate), dd = safeParseDate(r.dispatchDate);
+      if (!bd || !dd) return false;
+      return Math.floor((dd - bd) / 86400000) <= 2;
+    }).length;
+    const dispatchPlanPct = dispatchedReal.length > 0 ? percent(dispatchSameDay, dispatchedReal.length) : null;
+
+    /* Courier dispatch coverage: of booked, how many actually dispatched (proxy for vehicle-plan-vs-placed across all couriers) */
+    const dispatchCoveragePct = bookedCount > 0 ? percent(dispatchedCount, bookedCount) : null;
+
+    /* Proof of Dispatch: % of dispatched orders with both AWB no AND dispatch date populated */
+    const dispatchWithAwb = dispatchedReal.filter(r => r.awbNo && String(r.awbNo).trim() !== '' && String(r.awbNo).trim() !== '-').length;
+    const proofOfDispatchPct = dispatchedReal.length > 0 ? percent(dispatchWithAwb, dispatchedReal.length) : null;
+
+    /* Appointment coverage — overall + Zepto-specific (matches user's KPI sheet emphasis) */
+    const apptCoveragePct = intransit.length > 0 ? percent(intransit.filter(r => safeParseDate(r.appointmentDate)).length, intransit.length) : null;
+    const zeptoIntransit = intransit.filter(r => r.platform && r.platform.toLowerCase().includes('zepto'));
+    const zeptoApptPct = zeptoIntransit.length > 0 ? percent(zeptoIntransit.filter(r => safeParseDate(r.appointmentDate)).length, zeptoIntransit.length) : null;
+
     return {
       delPct, rtoPct, costPct, avgTAT, agePcts, platDel, platDelCount, avgPlatDel, platDataCount,
       podPct, apptPct, noApptPcts, rtoAgePcts, platRTO, monthTrend,
       total, delivered: del.length, rto: rto.length, intransit: intransit.length,
       costRowsCount: costRows.length, podDenom: del.length, apptDenom: intransit.length,
+      /* Anoop-specific */
+      bookedCount, dispatchedCount, dispatchPlanPct, dispatchCoveragePct,
+      dispatchAgePcts, dispatchAgeFreshPct: dispatchAgePcts['0-2'],
+      proofOfDispatchPct, apptCoveragePct, zeptoApptPct, zeptoIntransitCount: zeptoIntransit.length,
     };
   }, [data, kpiMonth]);
 
@@ -647,10 +695,42 @@ export default function OKR() {
           basis: g.platformPct != null ? 'Average of per-platform GRN% (Σ GRN ÷ Σ Dispatched per Order Type)' : 'GRN data unavailable — enter manually' },
       ],
       anoop: [
-        { name: 'Doc Issues %', w: 10, actual: null, target: 98.5, base: 98, high: 99, exc: 100, unit: '%', src: 'manual', basis: 'documentation KPI — manual entry' },
-        { name: 'Dispatch & Pickup', w: 55, actual: null, target: 93, base: 88, high: 96, exc: 99, unit: '%', src: 'manual', basis: 'dispatch/pickup compliance — manual entry' },
-        { name: 'Quality Control', w: 30, actual: null, target: 94, base: 90, high: 97, exc: 100, unit: '%', src: 'manual', basis: 'quality KPI — manual entry' },
-        { name: 'WH Capacity Utilization', w: 15, actual: null, target: 80, base: 70, high: 85, exc: 90, unit: '%', src: 'manual', basis: 'warehouse capacity — manual entry' },
+        { name: 'Dispatch Plan Compliance', w: 30, actual: a.dispatchPlanPct, target: 90, base: 80, high: 95, exc: 98, unit: '%',
+          src: a.dispatchPlanPct != null ? 'auto' : 'manual', n: a.dispatchedCount,
+          basis: a.dispatchPlanPct != null
+            ? '% of dispatched orders dispatched within 2 days of booking — rolls up "Plan vs Report" across Amazon/Gracious/Omkara/Skylark/Rajesh/Shree Krishna/Sudiksha/Godara/Vani'
+            : 'No dispatch data in shipment dataset' },
+        { name: 'Courier Dispatch Coverage', w: 20, actual: a.dispatchCoveragePct, target: 98, base: 95, high: 99, exc: 100, unit: '%',
+          src: a.dispatchCoveragePct != null ? 'auto' : 'manual', n: a.bookedCount,
+          basis: a.dispatchCoveragePct != null
+            ? `Σ(dispatched) ÷ Σ(booked) × 100 — aggregate Vehicle Plan vs Vehicle Placed / Vehicle Capacity vs Load · ${a.dispatchedCount.toLocaleString('en-IN')} dispatched of ${a.bookedCount.toLocaleString('en-IN')} booked`
+            : 'No booking data' },
+        { name: 'Dispatch Ageing — Fresh', w: 20, actual: a.dispatchAgeFreshPct, target: 85, base: 70, high: 90, exc: 95, unit: '%',
+          src: a.dispatchAgeFreshPct != null ? 'auto' : 'manual', n: a.dispatchedCount,
+          basis: a.dispatchAgeFreshPct != null
+            ? '% of dispatched orders aged 0-2 days from booking — Dispatch Ageing Breakdown rolled up'
+            : 'No dispatch data',
+          sub: a.dispatchAgePcts ? [
+            { label: '0-2 Days',  value: a.dispatchAgePcts['0-2'],  target: 85, good: true },
+            { label: '2-5 Days',  value: a.dispatchAgePcts['2-5'],  target: 10, good: false },
+            { label: '5-10 Days', value: a.dispatchAgePcts['5-10'], target: 3,  good: false },
+            { label: '10-20 Days',value: a.dispatchAgePcts['10-20'],target: 1,  good: false },
+            { label: '20+ Days',  value: a.dispatchAgePcts['20+'],  target: 0,  good: false },
+          ] : undefined },
+        { name: 'Proof of Dispatch', w: 15, actual: a.proofOfDispatchPct, target: 95, base: 90, high: 98, exc: 100, unit: '%',
+          src: a.proofOfDispatchPct != null ? 'auto' : 'manual', n: a.dispatchedCount,
+          basis: a.proofOfDispatchPct != null
+            ? '% of dispatched orders with valid AWB number populated — proxy for Overall Proof of Dispatch (inverse of POD miss % and wrong e-way bill rate)'
+            : 'No dispatch data' },
+        { name: 'Appointment Coverage', w: 15, actual: a.apptCoveragePct, target: 90, base: 80, high: 95, exc: 100, unit: '%',
+          src: a.apptCoveragePct != null ? 'auto' : 'manual', n: a.apptDenom,
+          basis: a.apptCoveragePct != null
+            ? `In-transit orders with appointment booked ÷ total in-transit · Zepto-specific: ${a.zeptoApptPct != null ? a.zeptoApptPct.toFixed(1) + '% of ' + a.zeptoIntransitCount + ' Zepto' : 'n/a'}`
+            : 'No in-transit data',
+          sub: [
+            { label: 'Overall Appt %', value: a.apptCoveragePct, target: 90, good: true },
+            { label: 'Zepto Appt %', value: a.zeptoApptPct, target: 90, good: true, n: a.zeptoIntransitCount },
+          ] },
       ],
     };
     /* Build the full all-owners list once; either return it or slice to current owner */
@@ -690,8 +770,11 @@ export default function OKR() {
       { name: 'Platform GRN', target: 99 },
     ]);
     def('anoop', [
-      { name: 'Doc Issues %', target: 98.5 }, { name: 'Dispatch & Pickup', target: 93 },
-      { name: 'Quality Control', target: 94 }, { name: 'WH Capacity Utilization', target: 80 },
+      { name: 'Dispatch Plan Compliance', target: 90 },
+      { name: 'Courier Dispatch Coverage', target: 98 },
+      { name: 'Dispatch Ageing — Fresh', target: 85 },
+      { name: 'Proof of Dispatch', target: 95 },
+      { name: 'Appointment Coverage', target: 90 },
     ]);
     return list;
   }, [actuals, grnScoped]);
@@ -1374,6 +1457,29 @@ export default function OKR() {
           if (monthFilflo.length > 0) {
             const fa = computeFilfloAgeing(monthFilflo, isCurrentMonth ? now : monthEnd);
             if (fa.ageingPct != null) autoActuals[m]['GRN Ageing'] = fa.ageingPct;
+          }
+          /* ─── Anoop's First-Mile / Dispatch KPIs — shipment-level dates rolled up monthly ─── */
+          const bookedM = rows.filter(r => safeParseDate(r.bookingDate));
+          const dispM   = rows.filter(r => safeParseDate(r.dispatchDate));
+          const bookedCount = bookedM.length;
+          const dispCount   = dispM.length;
+          if (bookedCount > 0) {
+            autoActuals[m]['Courier Dispatch Coverage'] = parseFloat(percent(dispCount, bookedCount).toFixed(1));
+          }
+          if (dispCount > 0) {
+            const fast = dispM.filter(r => {
+              const bd = safeParseDate(r.bookingDate), dd = safeParseDate(r.dispatchDate);
+              return bd && dd && Math.floor((dd - bd) / 86400000) <= 2;
+            }).length;
+            autoActuals[m]['Dispatch Plan Compliance'] = parseFloat(percent(fast, dispCount).toFixed(1));
+            autoActuals[m]['Dispatch Ageing — Fresh']  = parseFloat(percent(fast, dispCount).toFixed(1));
+            const withAwb = dispM.filter(r => r.awbNo && String(r.awbNo).trim() !== '' && String(r.awbNo).trim() !== '-').length;
+            autoActuals[m]['Proof of Dispatch'] = parseFloat(percent(withAwb, dispCount).toFixed(1));
+          }
+          const intM = rows.filter(r => isInTransit(r.status) || isOFD(r.status));
+          if (intM.length > 0) {
+            const withAppt = intM.filter(r => safeParseDate(r.appointmentDate)).length;
+            autoActuals[m]['Appointment Coverage'] = parseFloat(percent(withAppt, intM.length).toFixed(1));
           }
           /* NOTE: Doc Issues %, Dispatch & Pickup, Quality Control, WH Capacity Utilization remain MANUAL
              (no shipment / GRN source). Filled by user in Monthly Tracking cells. */
