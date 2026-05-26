@@ -7,3 +7,24 @@ dist
 cloudflared.exe
 cloudflared.log
 BOT_URL.txt
+
+# ─── Filflo bot secrets — NEVER commit these ─────────────────────────
+# Real credentials must be placed locally by ops; see
+# scripts/filflo_bot_server/SECRETS_SETUP.md
+scripts/filflo_bot_server/.env
+scripts/filflo_bot_server/authorized_user.json
+scripts/filflo_bot_server/client_secret.json
+scripts/filflo_bot_server/token.json
+scripts/filflo_bot_server/config.json
+
+# Bot runtime artifacts
+scripts/filflo_bot_server/__pycache__/
+scripts/filflo_bot_server/.pytest_cache/
+scripts/filflo_bot_server/.chrome-headless-profile/
+scripts/filflo_bot_server/POD_FILES/
+scripts/filflo_bot_server/google_sheet_backups/
+scripts/filflo_bot_server/logs/
+scripts/filflo_bot_server/screenshots/
+scripts/filflo_bot_server/Data.xlsx
+scripts/filflo_bot_server/Order-wise.csv
+scripts/filflo_bot_server/*.docx

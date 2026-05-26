@@ -1,58 +1,188 @@
-# Filflo Bot Runner — Command Center bridge
+# Filflo Bot
 
-These Filflo bots are **Python/Selenium/Playwright** automations (they drive a real
-browser), so they can't be triggered by a URL on their own. `bot_server.py` is a
-tiny zero-dependency HTTP server that runs **on the machine where the bots live**
-and exposes each bot as an endpoint the Command Center panel can call with one
-click — capturing live logs and pass/fail so errors surface for rework.
+Automated logistics management for the Filflo B2B portal — handles PO delivery verification, POD uploads, status tracking, and report generation via Selenium browser automation.
 
-## Setup (one time, on the bot machine)
+## What It Does
 
-1. Copy `bot_server.py` (and optionally `START_BOT_SERVER.bat`) into your
-   `Filflo_Bot` folder — the same folder as `filflo_combined_bot_v3.py`.
-2. Start it:
-   ```
-   python bot_server.py
-   ```
-   or double-click `START_BOT_SERVER.bat`. It listens on `http://127.0.0.1:8765`.
-   (No `pip install` needed — standard library only.)
-3. In the **Command Center** (panel → LRs → Command Center) click **Add Bot** for
-   each bot:
-   - **Run URL:** `http://127.0.0.1:8765/run`
-   - **Method:** `POST`
-   - **Payload:** `{"bot":"filflo_pod"}` — use the id of the bot you want
-     (see `BOTS` in `bot_server.py`: `filflo_pod`, `blinkit_appt`,
-     `instamart_booking`, `instamart_feeder`, `instamart_gsheet`, `scootsy_dn`,
-     `data_feeder`, `pod_feeder`, `push_to_gsheet`, `cleanup_sheet`, `multi_agent`).
+Filflo Bot reads a task list from an Excel workbook (`Filflo_Tasks.xlsx`), logs into the Filflo B2B portal, and processes each Purchase Order: verifying deliveries, entering dates, uploading Proof of Delivery files, and writing results back to Excel. It can run in batch mode (process all pending POs), single-PO mode, or through a conversational chat interface powered by an LLM.
 
-The panel runs the bot, polls until it finishes, then shows exit status + the last
-lines of its log. Failures show red with the error tail for rework.
+## Project Structure
 
-## Important notes
+```
+Filflo_Bot/
+├── filflo_combined_bot_v3.py   # Core Selenium automation (login, search, forms, POD upload)
+├── filflo_chat.py              # Conversational interface (LLM + tool calling)
+├── filflo_config.py            # Centralized configuration & env var loading
+├── po_status.py                # POStatus enum — single source of truth for all statuses
+├── excel_utils.py              # Excel read/write helpers with FileLock
+├── multi_agent_runner.py       # Parallel PO processing with ThreadPoolExecutor
+├── bot_monitor.py              # Monitoring dashboard & email alerting
+├── retry_utils.py              # Exponential backoff decorator & helpers
+├── llm_engine.py               # LLM API integration (Groq / OpenAI)
+├── tool_registry.py            # Wraps bot functions as LLM-callable tools
+├── data_feeder.py              # Imports delivery dates from Google Sheet → Excel
+├── pod_feeder.py               # Matches POD files to tracking IDs in Excel
+├── patch_bot_v3.py             # Unicode encoding fix for Windows terminals
+├── push_to_gsheet.py           # Pushes results back to Google Sheets
+├── tests/                      # pytest test suite (190+ tests)
+│   ├── test_po_status.py       # Status enum, is_row_done, categorize_result
+│   ├── test_excel_utils.py     # PO normalization, date parsing, POD file matching
+│   ├── test_validators.py      # Input validation (PO number, tracking ID, POD file)
+│   ├── test_bot_monitor.py     # Monitoring & alerting
+│   ├── test_retry_utils.py     # Exponential backoff
+│   └── test_smoke.py           # Compilation, imports, config validation
+├── .env.example                # Template for environment variables
+├── .gitignore                  # Excludes .env, credentials, logs, POD_FILES
+└── ARCHITECTURE.md             # NLP chat bridge architecture guide
+```
 
-- **Same machine:** the easiest setup is to run the panel (`npm run dev`) on the
-  same PC as the bots, so `127.0.0.1:8765` is reachable. The deployed
-  (vercel) panel cannot reach your localhost.
-- **Remote use (hosted vercel.app site):** the hosted site can't reach your
-  `127.0.0.1`. Expose the bot server with a **Cloudflare tunnel**:
-  1. Start `bot_server.py` (port 8765).
-  2. Double-click `START_BOT_TUNNEL.bat` — it downloads `cloudflared.exe`
-     (one-time) and prints a `https://….trycloudflare.com` URL.
-  3. Paste that URL into the Command Center's **Bot Server** box → it shows
-     **Connected**, and Run works from the hosted site.
-  Note: the trycloudflare URL changes every time you restart the tunnel — paste
-  the current one. (NOTE: localtunnel/`loca.lt` does NOT work here — it's blocked
-  from Vercel's servers; use Cloudflare as above.)
-- **Editing the bot list / arguments:** edit the `BOTS` map in `bot_server.py`.
-  Add command-line args if a bot needs them, e.g.
-  `"cmd": [PY, "instamart_booking_runner.py", "--today"]`.
-- **Long bots:** booking/Selenium bots can take minutes — that's fine, the panel
-  polls for up to 20 minutes. Quick bots return almost immediately.
+## Setup
 
-## Security
+### 1. Install Python Dependencies
 
-- The server binds to `0.0.0.0:8765`; on a shared network, prefer running it
-  bound to localhost or behind a tunnel with access control.
-- The bot folder contains credentials (`.env`, `client_secret.json`,
-  `authorized_user.json`). **Do not commit these or re-share the Drive zip** —
-  rotate any keys that may have been exposed.
+```cmd
+pip install -r requirements.txt
+```
+
+Key dependencies: `selenium`, `openpyxl`, `filelock`, `python-dotenv`, `groq` (for chat interface).
+
+### 2. Configure Environment Variables
+
+Copy `.env.example` to `.env` and fill in your values:
+
+```cmd
+copy .env.example .env
+```
+
+Required variables:
+
+| Variable | Description |
+|----------|-------------|
+| `FILFLO_LOGIN_EMAIL` | Your Filflo portal login email |
+| `FILFLO_LOGIN_PASSWORD` | Your Filflo portal password |
+
+Optional variables:
+
+| Variable | Description |
+|----------|-------------|
+| `FILFLO_GMAIL_SENDER` | Gmail address for sending reports/alerts |
+| `FILFLO_GMAIL_APP_PASSWORD` | Gmail App Password (not your regular password) |
+| `FILFLO_EMAIL_RECIPIENT` | Email to receive reports and failure alerts |
+| `GROQ_API_KEY` | Free API key from console.groq.com (for chat) |
+| `OPENAI_API_KEY` | OpenAI key (alternative to Groq) |
+
+### 3. Chrome WebDriver
+
+The bot uses Selenium with Chrome. Ensure Chrome is installed and `chromedriver` is on your PATH or in the bot folder.
+
+### 4. Prepare the Excel File
+
+Place `Filflo_Tasks.xlsx` in the bot folder with these columns:
+
+| Column | Content |
+|--------|---------|
+| A | PO Number |
+| B | Order Type |
+| C | Delivery Date |
+| D | Tracking ID (for POD matching) |
+| E | Status (written by bot) |
+
+### 5. POD Files
+
+Place Proof of Delivery files in the `POD_FILES/` folder, named by tracking ID (e.g., `6001029489.jpg`). Supported formats: JPG, JPEG, PNG, PDF, TIFF, BMP, GIF.
+
+## Usage
+
+### Batch Mode (process all pending POs)
+
+```cmd
+python filflo_combined_bot_v3.py
+```
+
+### Parallel Processing (multiple browser workers)
+
+```cmd
+python multi_agent_runner.py
+```
+
+### Chat Interface (natural language)
+
+```cmd
+python filflo_chat.py
+```
+
+Supports Hindi and English. Quick commands: `status`, `pending`, `logs`, `pods`, `help`. Or talk naturally — the LLM will figure out which tool to call.
+
+### Data Feeders
+
+```cmd
+python data_feeder.py          # Import delivery dates from Google Sheet
+python pod_feeder.py           # Match POD files to tracking IDs
+python instamart_data_feeder.py
+python instamart_push_to_gsheet.py
+```
+
+### Instamart PO Booking
+
+The Instamart booking browser automation remains isolated in [instamart-playwright-bot/README.md](/C:/Users/lenovo/Desktop/Filflo_Bot/instamart-playwright-bot/README.md).
+The current flow is:
+
+1. `python instamart_data_feeder.py`
+2. `npm.cmd run book-instamart`
+3. `python instamart_push_to_gsheet.py`
+
+## Running Tests
+
+```cmd
+pytest tests/ -v
+```
+
+The test suite covers PO status logic, Excel utilities (normalization, date parsing, POD file matching), input validators, monitoring, retry logic, and smoke tests (compilation, imports, config).
+
+## Monitoring & Alerts
+
+The `BotMonitor` class tracks PO processing metrics and sends email alerts when consecutive failures reach a threshold (default: 3). Use it in your processing loop:
+
+```python
+from bot_monitor import BotMonitor
+monitor = BotMonitor(logger=logger, alert_threshold=3)
+
+# After each PO:
+monitor.record("PO-123", success=True, duration_sec=12.5)
+
+# View dashboard:
+print(monitor.dashboard())
+```
+
+## Retry Resilience
+
+Use `retry_with_backoff` for flaky portal interactions:
+
+```python
+from retry_utils import retry_with_backoff
+
+@retry_with_backoff(max_retries=3, base_delay=2.0, exceptions=(TimeoutError,))
+def click_save_button(driver):
+    ...
+```
+
+## Other Bot Variants
+
+The repository also contains automation for other portals:
+
+| File | Portal | Purpose |
+|------|--------|---------|
+| `blinkit_appointment_booker.py` | Blinkit | Appointment booking automation |
+| `instamart_data_feeder.py` | Instamart | Python fetch from trackers into `Data.xlsx` |
+| `instamart-playwright-bot/` | Instamart | Isolated Playwright-based PO booking bot |
+| `instamart_push_to_gsheet.py` | Instamart | Python push from `Data.xlsx` back to trackers |
+| `scootsy_DN_updation.py` | Scootsy | Delivery note updates |
+| `cleanup_sheet.py` | — | Excel cleanup utility |
+
+## Key Design Decisions
+
+1. **Zero changes to v3** — The NLP chat bridge imports and calls v3's existing functions without modifying the core bot.
+2. **POStatus enum** — All 20+ status strings centralized in `po_status.py` to prevent typos and enable property-based checks (`is_verified`, `is_terminal`, etc.).
+3. **FileLock for Excel** — Prevents data corruption when multiple workers write to the same workbook.
+4. **Exponential backoff** — Prevents hammering the portal during transient failures.
+5. **Email alerts** — Automatic notification on consecutive failures with cooldown to prevent spam.

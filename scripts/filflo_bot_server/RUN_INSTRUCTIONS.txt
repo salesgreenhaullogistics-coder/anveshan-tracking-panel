@@ -1,0 +1,69 @@
+========================================
+  Blinkit Appointment Booker - Instructions
+========================================
+
+STEP 1: Install Requirements
+-----------------------------
+pip install selenium openpyxl
+
+STEP 2: Download ChromeDriver
+------------------------------
+Download matching version from: https://googlechromelabs.github.io/chrome-for-testing/
+Place chromedriver.exe in your PATH or same folder as the script.
+
+STEP 3: Start Chrome with Remote Debugging
+--------------------------------------------
+Close all Chrome windows, then run:
+
+  "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
+
+Or create a shortcut with this target.
+
+STEP 4: Login to PartnersBiz
+------------------------------
+In the Chrome window that opened:
+  1. Go to https://www.partnersbiz.com
+  2. Login with prashant@anveshan.farm
+  3. Enter OTP from email
+  4. Select "Access dashboard as Vendor"
+  5. Make sure you can see the PO Appointments page
+
+STEP 5: Prepare Data.xlsx
+---------------------------
+Ensure Data.xlsx is in the same folder as the script with these columns:
+  - PO Number
+  - AWB No.
+  - EDD (date format)
+  - Vendor (courier name, e.g., "Delhivery")
+
+The bot will add/update these columns:
+  - Appointment ID
+  - Scheduled Date
+  - Reporting Time
+  - Status
+
+STEP 6: Run the Bot
+---------------------
+Open a NEW terminal (not the Chrome one) and run:
+
+  cd path\to\Filflo_Bot
+  python blinkit_appointment_booker.py
+
+STEP 7: Monitor Progress
+--------------------------
+The bot will:
+  - Skip POs already marked as Scheduled/No Slot Available/Not Found
+  - Process each remaining PO one by one
+  - Update Data.xlsx in real-time after each PO
+  - Print progress to terminal
+  - You can press Ctrl+C to stop safely (progress is saved)
+
+NOTES:
+  - Keep the Chrome window visible (don't minimize)
+  - Don't click on the Chrome window while the bot is running
+  - If Chrome session expires, stop the bot, re-login, and run again
+  - The bot handles these cases:
+    * PO not found / already scheduled -> marks as skip
+    * No slot available -> marks and moves on
+    * Successful booking -> saves Appointment ID to Excel
+    * Errors -> marks as Error, moves to next PO

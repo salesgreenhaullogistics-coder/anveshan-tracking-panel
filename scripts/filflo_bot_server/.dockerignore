@@ -1,0 +1,37 @@
+# ── Secrets & credentials ──────────────────────────────────
+.env
+*.env
+
+# ── Data files (mounted as volumes, not baked into image) ──
+Data.xlsx
+Filflo_Tasks.xlsx
+Order-wise.csv
+POD_FILES/
+downloads/
+logs/
+
+# ── Python cache ────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ── Windows batch files (not needed in Linux container) ─────
+*.bat
+
+# ── Shell scripts are needed (don't ignore them) ─────────────
+# docker-entrypoint.sh is copied explicitly via Dockerfile
+
+# ── Docs & misc ─────────────────────────────────────────────
+*.docx
+*.md
+*.txt
+*.csv
+
+# ── Git ─────────────────────────────────────────────────────
+.git/
+.gitignore
+
+# ── Windows artifacts ───────────────────────────────────────
+C:\*/
