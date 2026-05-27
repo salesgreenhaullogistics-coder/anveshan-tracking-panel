@@ -26,9 +26,79 @@ const VIEWS = [
   { key: 'executive', label: 'Executive Summary', icon: BarChart3 },
   { key: 'scorecard', label: 'KPI Scorecard', icon: Target },
   { key: 'tracking', label: 'Monthly Tracking', icon: Calendar },
+  { key: 'framework', label: 'OKR Framework', icon: ShieldAlert },
   { key: 'poa', label: 'Plan of Action', icon: Lightbulb },
   { key: 'rootcause', label: 'AI Root Cause', icon: Brain },
 ];
+
+/* ───────────────────────────────────────────────────────────────────────
+   MASTER OKR FRAMEWORK — sourced from Logistics OKR.xlsx (May 2026)
+   3 sheets: Master OKR Framework / Control Tower KPIs / Executive Dashboard
+   Each row carries:
+     okr / skr / initiative / metric / target / frequency / owner / impact
+     + optional `link` mapping to an existing auto-KPI name (for live actual)
+   ─────────────────────────────────────────────────────────────────────── */
+const OKR_FRAMEWORK = [
+  /* Vendor Governance */
+  { okr: 'Vendor Governance',     skr: 'Vendor SLA Compliance',      initiative: 'Carrier Performance Scorecard',    metric: 'Vendor SLA %',          target: '>95%',     frequency: 'Weekly',  owner: 'anoop',    impact: 'Reliability' },
+  { okr: 'Vendor Governance',     skr: 'Backup Vendor Readiness',    initiative: 'Emergency Fleet Coverage',          metric: 'Backup Readiness',      target: '100%',     frequency: 'Monthly', owner: 'anoop',    impact: 'Business Continuity' },
+  /* Warehouse */
+  { okr: 'Warehouse Excellence',  skr: 'Dock Capacity Optimization', initiative: 'Live Capacity Monitoring',          metric: 'Capacity Utilization',  target: '85-92%',   frequency: 'Daily',   owner: 'anoop',    impact: 'Operational Optimization' },
+  { okr: 'Warehouse Operations',  skr: 'Platform GRN Improvement',   initiative: 'Platform GRN Reconciliation',       metric: 'GRN TAT',               target: '<24 Hours',frequency: 'Daily',   owner: 'nandlal', impact: 'Inventory Accuracy',     link: 'GRN Ageing' },
+  { okr: 'Warehouse Operations',  skr: 'Claim Reduction & Recovery', initiative: 'Damage / Shortage Claim Monitoring',metric: 'Claim Resolution TAT',  target: '<7 Days',  frequency: 'Weekly',  owner: 'nandlal', impact: 'Loss Prevention',         link: 'GRN Recovery %' },
+  /* Automation & AI */
+  { okr: 'Automation & AI',       skr: 'Appointment Automation',     initiative: 'RPA Appointment Bot',               metric: 'Automation Adoption',   target: '>90%',     frequency: 'Weekly',  owner: 'nandlal', impact: 'Productivity' },
+  { okr: 'Automation & AI',       skr: 'Appointment Automation',     initiative: 'RPA Appointment Bot',               metric: 'Automation Adoption',   target: '>90%',     frequency: 'Weekly',  owner: 'sandeep', impact: 'Productivity' },
+  { okr: 'Automation & AI',       skr: 'AI Prediction System',       initiative: 'Delay Prediction Engine',           metric: 'Predictive Accuracy',   target: '>95%',     frequency: 'Monthly', owner: 'sandeep', impact: 'Proactive Control' },
+  { okr: 'Automation & AI',       skr: 'Dashboard Intelligence',     initiative: 'Live KPI Dashboard',                metric: 'Dashboard Refresh Rate',target: '<15 mins', frequency: 'Daily',   owner: 'sandeep', impact: 'Visibility' },
+  /* Delivery Excellence */
+  { okr: 'Delivery Excellence',   skr: 'POD Compliance & Visibility',initiative: 'POD Monitoring & Escalation',       metric: 'POD Closure %',         target: '>99%',     frequency: '72 Hours',owner: 'nandlal', impact: 'Customer Satisfaction',  link: 'POD Visibility' },
+  { okr: 'Delivery Excellence',   skr: 'Reduce Dispatch Delay',      initiative: 'Warehouse SLA Monitoring',          metric: 'Dispatch TAT',          target: '<6 Hours', frequency: 'Daily',   owner: 'prashant',impact: 'Customer Experience',    link: 'Dispatch Plan Compliance' },
+  { okr: 'Delivery Excellence',   skr: 'Improve OTIF',               initiative: 'Order Fulfilment Control',          metric: 'OTIF %',                target: '>98%',     frequency: 'Daily',   owner: 'prashant',impact: 'Service Excellence',     link: 'Platform OTIF' },
+  { okr: 'Delivery Excellence',   skr: 'Reduce Shipment Ageing',     initiative: 'Control Tower Escalation',          metric: 'Ageing >7 Days',        target: '<1.5%',    frequency: 'Daily',   owner: 'prashant',impact: 'Operational Efficiency', link: 'In-Transit Aging' },
+  { okr: 'Delivery Excellence',   skr: 'POD Compliance & Visibility',initiative: 'POD Monitoring & Escalation',       metric: 'POD Closure %',         target: '>99%',     frequency: 'Daily',   owner: 'prashant',impact: 'Customer Satisfaction',  link: 'POD Ageing' },
+  /* Reverse Logistics */
+  { okr: 'Reverse Logistics',     skr: 'RTO Ageing Control',         initiative: 'RTO Ageing Monitoring & Clearance', metric: 'RTO Ageing >7 Days',    target: '<5%',      frequency: 'Daily',   owner: 'prashant',impact: 'Faster Reverse Processing',link: 'RTO Ageing Control' },
+  { okr: 'Reverse Logistics',     skr: 'RTO Reduction',              initiative: 'NDR & Reattempt',                    metric: 'Overall RTO %',         target: '<8%',      frequency: 'Weekly',  owner: 'prashant',impact: 'Reduced Reverse Cost',   link: 'B2B RTO Tracking' },
+  { okr: 'Reverse Logistics',     skr: 'RTO Quality Control',        initiative: 'Fake / Customer Reject RTO Analysis',metric: 'Preventable RTO %',     target: '<3%',      frequency: 'Monthly', owner: 'prashant',impact: 'Improved Delivery Success' },
+  /* Cost Optimization */
+  { okr: 'Cost Optimization',     skr: 'Q-Commerce Cost Reduction',  initiative: 'Blinkit Cost Optimization',         metric: 'Cost per PO',           target: '-2.5%',    frequency: 'Monthly', owner: 'sandeep', impact: 'Profitability',          link: 'Overall Cost %' },
+  { okr: 'Cost Optimization',     skr: 'Q-Commerce Cost Reduction',  initiative: 'Zepto Cost Optimization',           metric: 'Cost per Order',        target: '-2.5%',    frequency: 'Monthly', owner: 'sandeep', impact: 'Profitability',          link: 'Overall Cost %' },
+  { okr: 'Cost Optimization',     skr: 'E-commerce Cost Reduction',  initiative: 'Amazon FBA Optimization',           metric: 'Cost per Shipment',     target: '-3.0%',    frequency: 'Monthly', owner: 'sandeep', impact: 'Margin Improvement',     link: 'Overall Cost %' },
+  { okr: 'Cost Optimization',     skr: 'Internal Transfer Optimization',initiative: 'FTL Load Utilization',           metric: 'Vehicle Fill Rate',     target: '>92%',     frequency: 'Weekly',  owner: 'sandeep', impact: 'Cost Reduction' },
+  { okr: 'Cost Optimization',     skr: 'Return Loss Reduction',      initiative: 'Reverse Logistics Optimization',    metric: 'Return Cost %',         target: '<4%',      frequency: 'Monthly', owner: 'sandeep', impact: 'Loss Prevention' },
+];
+
+const CONTROL_TOWER_KPIS = [
+  { kra: 'Dispatch Planning',     kpi: 'Dispatch Backlog',         definition: 'Pending dispatch ageing',          target: '<0.5 Day', escalation: '>1 Day',            actionOwner: 'Warehouse',     automation: 'AI Alert' },
+  { kra: 'Appointment Management',kpi: 'Pending Appointment',      definition: 'Pending beyond SLA',                target: '<2%',       escalation: '>5%',               actionOwner: 'Control Tower', automation: 'RPA' },
+  { kra: 'Transport Management',  kpi: 'Vehicle Placement',        definition: 'Plan vs Placed',                    target: '98%',       escalation: '<90%',              actionOwner: 'Transport',     automation: 'Automation' },
+  { kra: 'Shipment Tracking',     kpi: 'Live Tracking Visibility', definition: 'Trackable shipment %',              target: '>99%',      escalation: '<95%',              actionOwner: 'Control Tower', automation: 'API Integration' },
+  { kra: 'Customer Experience',   kpi: 'Delivery Commitment',      definition: 'Committed delivery adherence',      target: '>98%',      escalation: '<95%',              actionOwner: 'Operations',    automation: 'AI Monitoring' },
+  { kra: 'Inventory Governance',  kpi: 'Inventory Mismatch',       definition: 'Mismatch ratio',                    target: '<0.3%',     escalation: 'Any Critical Case', actionOwner: 'Warehouse',     automation: 'System Validation' },
+  { kra: 'Returns Management',    kpi: 'RTO Percentage',           definition: 'Return to origin ratio',            target: '<2%',       escalation: '>4%',               actionOwner: 'Operations',    automation: 'Predictive Alert' },
+  { kra: 'Vendor Governance',     kpi: 'Rate Deviation',           definition: 'Deviation vs contract',             target: '0%',        escalation: 'Any Exception',     actionOwner: 'Finance',       automation: 'Audit Bot' },
+];
+
+const EXECUTIVE_DASHBOARD = [
+  { layer: 'Founder Dashboard',   metrics: 'OTIF, Cost %, RTO %, Revenue Impact',          purpose: 'Strategic Review' },
+  { layer: 'Control Tower',       metrics: 'Live Shipment, Ageing, Exceptions',            purpose: 'Operational Visibility' },
+  { layer: 'Warehouse Dashboard', metrics: 'Dispatch TAT, Capacity, Pending Orders',       purpose: 'Warehouse Governance' },
+  { layer: 'Transport Dashboard', metrics: 'Carrier SLA, Fill Rate, Cost',                 purpose: 'Transport Optimization' },
+  { layer: 'AI Dashboard',        metrics: 'Delay Prediction, Risk Alerts',                purpose: 'Predictive Intelligence' },
+  { layer: 'Finance Dashboard',   metrics: 'Freight Cost, Recovery, Audit',                purpose: 'Financial Governance' },
+];
+
+/* OKR colour tags so the framework table is scannable */
+const OKR_COLORS = {
+  'Vendor Governance':     { bg: 'bg-amber-50',   text: 'text-amber-700',   border: 'border-amber-200' },
+  'Warehouse Excellence':  { bg: 'bg-cyan-50',    text: 'text-cyan-700',    border: 'border-cyan-200' },
+  'Warehouse Operations':  { bg: 'bg-teal-50',    text: 'text-teal-700',    border: 'border-teal-200' },
+  'Automation & AI':       { bg: 'bg-violet-50',  text: 'text-violet-700',  border: 'border-violet-200' },
+  'Delivery Excellence':   { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
+  'Reverse Logistics':     { bg: 'bg-rose-50',    text: 'text-rose-700',    border: 'border-rose-200' },
+  'Cost Optimization':     { bg: 'bg-indigo-50',  text: 'text-indigo-700',  border: 'border-indigo-200' },
+};
 
 /* ─── KPI-specific action plan generator (extracted for re-use across views) */
 function getActionPlanFor(k, ownerName) {
@@ -1743,6 +1813,151 @@ export default function OKR() {
           );
         })()}
         </div>);
+      })()}
+
+      {/* ═══ OKR FRAMEWORK (from Logistics OKR.xlsx) ═══ */}
+      {view === 'framework' && (() => {
+        /* Owner filter — when an owner tab is active, only show their rows */
+        const filteredRows = owner === 'all' ? OKR_FRAMEWORK : OKR_FRAMEWORK.filter(r => r.owner === owner);
+        /* Group by OKR for visual sections */
+        const grouped = {};
+        filteredRows.forEach(r => { if (!grouped[r.okr]) grouped[r.okr] = []; grouped[r.okr].push(r); });
+        /* Compute live actual + grade for each row that has a `link` mapping */
+        const linkedKpi = (name) => allOwnerKpis.find(k => k.name === name);
+        return (
+          <div className="space-y-4">
+            {/* Header card */}
+            <div className="bg-gradient-to-br from-slate-50 to-indigo-50 border border-indigo-200 rounded-xl p-4">
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <div>
+                  <h2 className="text-base font-bold text-indigo-900 flex items-center gap-2"><ShieldAlert className="w-4 h-4" /> Master OKR Framework</h2>
+                  <p className="text-[11px] text-gray-600 mt-1">Sourced from <code className="bg-white px-1 py-0.5 rounded text-[10px]">Logistics OKR.xlsx</code> · {filteredRows.length} KPI{filteredRows.length === 1 ? '' : 's'} {owner !== 'all' && `for ${cur?.name}`} across {Object.keys(grouped).length} OKR theme{Object.keys(grouped).length === 1 ? '' : 's'}</p>
+                </div>
+                <div className="flex items-center gap-3 text-[10px] text-gray-600">
+                  <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500" /> linked to live KPI</div>
+                  <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-gray-300" /> reference / manual</div>
+                </div>
+              </div>
+            </div>
+
+            {/* Per-OKR sections */}
+            {Object.entries(grouped).map(([okrName, rows]) => {
+              const col = OKR_COLORS[okrName] || { bg: 'bg-gray-50', text: 'text-gray-700', border: 'border-gray-200' };
+              return (
+                <div key={okrName} className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                  <div className={`px-4 py-2.5 border-b border-gray-100 ${col.bg} flex items-center justify-between`}>
+                    <h3 className={`text-[12px] font-bold ${col.text}`}>{okrName}</h3>
+                    <span className="text-[10px] text-gray-500">{rows.length} initiative{rows.length === 1 ? '' : 's'}</span>
+                  </div>
+                  <div className="overflow-x-auto"><table className="w-full text-[10px]">
+                    <thead><tr className="bg-gray-50 border-b border-gray-100">
+                      <th className="px-2 py-1.5 text-left font-semibold text-gray-500">SKR</th>
+                      <th className="px-2 py-1.5 text-left font-semibold text-gray-500">Initiative</th>
+                      <th className="px-2 py-1.5 text-left font-semibold text-gray-700">KPI Metric</th>
+                      <th className="px-2 py-1.5 text-center font-semibold text-blue-600">Target</th>
+                      <th className="px-2 py-1.5 text-right font-semibold text-indigo-700">Live Actual</th>
+                      <th className="px-2 py-1.5 text-center font-semibold text-gray-500">Frequency</th>
+                      <th className="px-2 py-1.5 text-center font-semibold text-gray-500">Owner</th>
+                      <th className="px-2 py-1.5 text-left font-semibold text-gray-500">Impact Area</th>
+                    </tr></thead>
+                    <tbody className="divide-y divide-gray-50">
+                      {rows.map((r, i) => {
+                        const linked = r.link ? linkedKpi(r.link) : null;
+                        const hasLive = linked && linked.actual != null && isFinite(linked.actual);
+                        const liveText = hasLive ? `${fmt(linked.actual)}${linked.unit || '%'}` : '—';
+                        const gap = linked ? kpiGap(linked) : null;
+                        const liveColor = gap == null ? '#9ca3af' : gap <= 0 ? '#059669' : '#dc2626';
+                        const ownerInfo = KPI_OWNERS.find(o => o.key === r.owner);
+                        return (
+                          <tr key={i} className="hover:bg-gray-50/50">
+                            <td className="px-2 py-1.5 text-gray-700">{r.skr}</td>
+                            <td className="px-2 py-1.5 text-gray-600">{r.initiative}</td>
+                            <td className="px-2 py-1.5 font-semibold text-gray-800">
+                              <span className="flex items-center gap-1.5">
+                                <span className={`w-1.5 h-1.5 rounded-full ${linked ? 'bg-emerald-500' : 'bg-gray-300'}`} />
+                                {r.metric}
+                                {linked && <span className="text-[8px] text-emerald-600 ml-1 font-normal">→ {r.link}</span>}
+                              </span>
+                            </td>
+                            <td className="px-2 py-1.5 text-center text-blue-600 font-semibold">{r.target}</td>
+                            <td className="px-2 py-1.5 text-right font-bold font-mono" style={{ color: liveColor }}>
+                              {linked ? liveText : <span className="text-gray-300 text-[9px]">manual</span>}
+                            </td>
+                            <td className="px-2 py-1.5 text-center"><span className="text-[9px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 font-medium">{r.frequency}</span></td>
+                            <td className="px-2 py-1.5 text-center">
+                              <button onClick={() => setOwner(r.owner)} className="text-[10px] text-indigo-600 hover:underline font-semibold">{ownerInfo?.name || r.owner}</button>
+                            </td>
+                            <td className="px-2 py-1.5 text-gray-500 text-[10px]">{r.impact}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table></div>
+                </div>
+              );
+            })}
+
+            {/* Control Tower KPIs — second sheet from the xlsx */}
+            {owner === 'all' && (
+              <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                <div className="px-4 py-2.5 border-b border-gray-100 bg-gradient-to-r from-orange-50 to-amber-50 flex items-center justify-between">
+                  <h3 className="text-[12px] font-bold text-orange-800 flex items-center gap-2"><AlertTriangle className="w-3.5 h-3.5" /> Control Tower KPIs</h3>
+                  <span className="text-[10px] text-gray-500">{CONTROL_TOWER_KPIS.length} operational triggers</span>
+                </div>
+                <div className="overflow-x-auto"><table className="w-full text-[10px]">
+                  <thead><tr className="bg-gray-50 border-b border-gray-100">
+                    <th className="px-2 py-1.5 text-left font-semibold text-gray-500">KRA</th>
+                    <th className="px-2 py-1.5 text-left font-semibold text-gray-700">KPI</th>
+                    <th className="px-2 py-1.5 text-left font-semibold text-gray-500">Definition</th>
+                    <th className="px-2 py-1.5 text-center font-semibold text-blue-600">Target</th>
+                    <th className="px-2 py-1.5 text-center font-semibold text-red-600">Escalation Trigger</th>
+                    <th className="px-2 py-1.5 text-center font-semibold text-gray-500">Action Owner</th>
+                    <th className="px-2 py-1.5 text-center font-semibold text-violet-600">Automation</th>
+                  </tr></thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {CONTROL_TOWER_KPIS.map((r, i) => (
+                      <tr key={i} className="hover:bg-orange-50/30">
+                        <td className="px-2 py-1.5 text-gray-700 font-medium">{r.kra}</td>
+                        <td className="px-2 py-1.5 text-gray-800 font-semibold">{r.kpi}</td>
+                        <td className="px-2 py-1.5 text-gray-500">{r.definition}</td>
+                        <td className="px-2 py-1.5 text-center text-blue-600 font-semibold">{r.target}</td>
+                        <td className="px-2 py-1.5 text-center text-red-600 font-medium">{r.escalation}</td>
+                        <td className="px-2 py-1.5 text-center text-gray-600">{r.actionOwner}</td>
+                        <td className="px-2 py-1.5 text-center"><span className="text-[9px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 font-semibold">{r.automation}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table></div>
+              </div>
+            )}
+
+            {/* Executive Dashboard Layers — third sheet */}
+            {owner === 'all' && (
+              <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                <div className="px-4 py-2.5 border-b border-gray-100 bg-gradient-to-r from-purple-50 to-fuchsia-50 flex items-center justify-between">
+                  <h3 className="text-[12px] font-bold text-purple-800 flex items-center gap-2"><BarChart3 className="w-3.5 h-3.5" /> Executive Dashboard Layers</h3>
+                  <span className="text-[10px] text-gray-500">{EXECUTIVE_DASHBOARD.length} dashboards</span>
+                </div>
+                <div className="overflow-x-auto"><table className="w-full text-[10px]">
+                  <thead><tr className="bg-gray-50 border-b border-gray-100">
+                    <th className="px-2 py-1.5 text-left font-semibold text-gray-700">Dashboard Layer</th>
+                    <th className="px-2 py-1.5 text-left font-semibold text-gray-500">Metrics Included</th>
+                    <th className="px-2 py-1.5 text-left font-semibold text-gray-500">Purpose</th>
+                  </tr></thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {EXECUTIVE_DASHBOARD.map((r, i) => (
+                      <tr key={i} className="hover:bg-purple-50/30">
+                        <td className="px-2 py-1.5 text-gray-800 font-semibold">{r.layer}</td>
+                        <td className="px-2 py-1.5 text-gray-600">{r.metrics}</td>
+                        <td className="px-2 py-1.5 text-purple-700 font-medium">{r.purpose}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table></div>
+              </div>
+            )}
+          </div>
+        );
       })()}
 
       {/* ═══ PLAN OF ACTION ═══ */}
