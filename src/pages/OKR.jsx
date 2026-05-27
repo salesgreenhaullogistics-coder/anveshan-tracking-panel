@@ -89,6 +89,129 @@ const EXECUTIVE_DASHBOARD = [
   { layer: 'Finance Dashboard',   metrics: 'Freight Cost, Recovery, Audit',                purpose: 'Financial Governance' },
 ];
 
+/* ───────────────────────────────────────────────────────────────────────
+   ANOOP V2 — 9 KPIs per the Objective Area / KPI / Green Status sheet.
+   Daily values are uploaded via CSV and auto-aggregated to month / quarter /
+   year inside the OKR page. Each row carries a stable `id` (used as the
+   CSV column key + localStorage key) and presentation metadata.
+   ─────────────────────────────────────────────────────────────────────── */
+const ANOOP_DAILY_KPIS = [
+  { id: 'vehicle_plan_vs_placed',     name: 'Vehicle Plan vs Placed',         area: 'Transport Execution',     target: 98,  base: 95,   high: 99,   exc: 100, unit: '%',     inv: false, w: 12 },
+  { id: 'dispatch_plan_vs_handover',  name: 'Dispatch Plan vs Handover (Box)',area: 'Dispatch Accuracy',       target: 99,  base: 97,   high: 99.5, exc: 100, unit: '%',     inv: false, w: 14 },
+  { id: 'held_on_floor_handover',     name: 'Held on Floor for Handover',     area: 'Floor Control',           target: 2,   base: 4,    high: 1,    exc: 0.5, unit: '%',     inv: true,  w: 8  },
+  { id: 'dock_utilize_hours',         name: 'Dock Utilize Hours',             area: 'Dock Productivity',       target: 85,  base: 75,   high: 92,   exc: 95,  unit: '%',     inv: false, w: 10 },
+  { id: 'vehicle_halting_hours',      name: 'Vehicle Halting Hours',          area: 'Vehicle Efficiency',      target: 30,  base: 45,   high: 20,   exc: 15,  unit: ' min',  inv: true,  w: 8  },
+  { id: 'proof_of_dispatch_miss',     name: 'Proof of Dispatch Miss %',       area: 'Dispatch Compliance',     target: 0.5, base: 1,    high: 0.25, exc: 0,   unit: '%',     inv: true,  w: 10 },
+  { id: 'zepto_appointment_booked',   name: 'Zepto Appointment Booked %',     area: 'Appointment Management',  target: 99,  base: 96,   high: 99.5, exc: 100, unit: '%',     inv: false, w: 14 },
+  { id: 'document_error_pct',         name: 'Document Error %',               area: 'Documentation Quality',   target: 0.3, base: 0.8,  high: 0.15, exc: 0,   unit: '%',     inv: true,  w: 12 },
+  { id: 'po_created_easyecom',        name: 'PO Created on EasyEcom (within SLA)', area: 'OMS Excellence',     target: 99,  base: 95,   high: 99.5, exc: 100, unit: '%',     inv: false, w: 12 },
+];
+
+/* Day-level helpers — parse YYYY-MM-DD safely + scope filtering */
+function parseISODate(s) { if (!s) return null; const m = String(s).trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})/); if (!m) { const d = new Date(s); return isNaN(d) ? null : new Date(d.getFullYear(), d.getMonth(), d.getDate()); } return new Date(+m[1], +m[2] - 1, +m[3]); }
+function isoStr(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+function monthLabel(d) { const M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']; return `${M[d.getMonth()]}'${String(d.getFullYear()).slice(2)}`; }
+function quarterLabel(d) { return `Q${Math.floor(d.getMonth() / 3) + 1}'${String(d.getFullYear()).slice(2)}`; }
+function fyLabel(d) { /* Indian FY: Apr → Mar */ const y = d.getFullYear(); const fyStart = d.getMonth() >= 3 ? y : y - 1; return `FY ${fyStart}-${String(fyStart + 1).slice(2)}`; }
+
+/* Filter daily-rows by a scope string: 'rolling30' | "Mar'26" | "Q1'26" | "FY 2025-26" */
+function filterAnoopDailyByScope(dailyRows, scope, refDate) {
+  const ref = refDate || new Date();
+  if (!scope || scope === 'rolling30' || scope === 'rolling') {
+    const cutoff = new Date(ref); cutoff.setDate(cutoff.getDate() - 30);
+    return dailyRows.filter(r => r._d && r._d >= cutoff && r._d <= ref);
+  }
+  if (scope.startsWith('Q')) {
+    return dailyRows.filter(r => r._d && quarterLabel(r._d) === scope);
+  }
+  if (scope.startsWith('FY')) {
+    return dailyRows.filter(r => r._d && fyLabel(r._d) === scope);
+  }
+  /* month like "Mar'26" */
+  return dailyRows.filter(r => r._d && monthLabel(r._d) === scope);
+}
+
+/* Aggregate daily rows → one value per KPI id. Averages percentages and
+   inverted ratios; sums absolute counts (none here, but kept for forward-compat). */
+function aggregateAnoopDaily(dailyRows) {
+  const out = { _n: dailyRows.length };
+  ANOOP_DAILY_KPIS.forEach(k => {
+    const vals = dailyRows.map(r => r[k.id]).filter(v => v != null && isFinite(v));
+    if (vals.length === 0) { out[k.id] = null; out[`${k.id}_n`] = 0; return; }
+    /* Average for all current KPIs — they're all rates / proportions / per-day minutes */
+    const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+    out[k.id] = parseFloat(avg.toFixed(2));
+    out[`${k.id}_n`] = vals.length;
+  });
+  return out;
+}
+
+/* CSV → daily rows. Accepts header row with `Date` + any subset of KPI ids/names. */
+function parseAnoopCSV(text) {
+  if (!text) return { rows: [], errors: ['empty file'] };
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (lines.length < 2) return { rows: [], errors: ['need at least one header + one data row'] };
+  /* Split header — tolerant of quoted commas */
+  const splitCsv = (line) => {
+    const out = []; let cur = ''; let q = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"' && line[i + 1] === '"') { cur += '"'; i++; continue; }
+      if (c === '"') { q = !q; continue; }
+      if (c === ',' && !q) { out.push(cur); cur = ''; continue; }
+      cur += c;
+    }
+    out.push(cur);
+    return out;
+  };
+  const header = splitCsv(lines[0]).map(h => h.trim());
+  /* Map header → kpi id (accept id, name, or area as headings) */
+  const lcHeader = header.map(h => h.toLowerCase());
+  const idxOf = (kpiId) => {
+    const k = ANOOP_DAILY_KPIS.find(x => x.id === kpiId);
+    if (!k) return -1;
+    const candidates = [k.id.toLowerCase(), k.name.toLowerCase(), k.area.toLowerCase()];
+    for (let i = 0; i < lcHeader.length; i++) {
+      if (candidates.includes(lcHeader[i])) return i;
+    }
+    return -1;
+  };
+  const dateIdx = lcHeader.findIndex(h => h === 'date' || h === 'day' || h === 'd');
+  if (dateIdx < 0) return { rows: [], errors: ["header must contain a 'Date' column"] };
+  const kpiIdxs = {};
+  ANOOP_DAILY_KPIS.forEach(k => { kpiIdxs[k.id] = idxOf(k.id); });
+  const rows = [];
+  const errors = [];
+  for (let li = 1; li < lines.length; li++) {
+    const cells = splitCsv(lines[li]);
+    const dStr = cells[dateIdx];
+    const d = parseISODate(dStr);
+    if (!d) { errors.push(`row ${li + 1}: invalid date "${dStr}"`); continue; }
+    const row = { date: isoStr(d), _d: d };
+    ANOOP_DAILY_KPIS.forEach(k => {
+      const idx = kpiIdxs[k.id];
+      if (idx < 0) return;
+      const raw = cells[idx];
+      if (raw == null || String(raw).trim() === '') return;
+      const v = parseFloat(String(raw).replace(/[,%\s]/g, ''));
+      if (isFinite(v)) row[k.id] = v;
+    });
+    rows.push(row);
+  }
+  return { rows, errors };
+}
+
+/* Daily rows → CSV string for download / template */
+function anoopRowsToCSV(rows) {
+  const header = ['Date', ...ANOOP_DAILY_KPIS.map(k => k.name)];
+  const body = rows.map(r => {
+    const cells = [r.date];
+    ANOOP_DAILY_KPIS.forEach(k => { const v = r[k.id]; cells.push(v == null ? '' : String(v)); });
+    return cells.map(c => /[",\n]/.test(String(c)) ? `"${String(c).replace(/"/g, '""')}"` : String(c)).join(',');
+  });
+  return [header.join(','), ...body].join('\n');
+}
+
 /* OKR colour tags so the framework table is scannable */
 const OKR_COLORS = {
   'Vendor Governance':     { bg: 'bg-amber-50',   text: 'text-amber-700',   border: 'border-amber-200' },
@@ -452,6 +575,18 @@ function classifyKPI(kn, mRows, now) {
     return { kpiType, filtered, excludedCount, note };
   }
 
+  /* Anoop's 9 daily-CSV KPIs — drilldown shows the daily series from anoop-daily-v1 */
+  const ANOOP_KPI_NAME_SET = new Set([
+    'vehicle plan vs placed', 'dispatch plan vs handover (box)', 'held on floor for handover',
+    'dock utilize hours', 'vehicle halting hours', 'proof of dispatch miss %',
+    'zepto appointment booked %', 'document error %', 'po created on easyecom (within sla)',
+  ]);
+  if (ANOOP_KPI_NAME_SET.has(kn)) {
+    kpiType = 'anoop_daily';
+    note = 'This KPI is sourced from the daily CSV upload (anoop-daily-v1 in localStorage). Below table shows daily values + the rolling aggregate; click any day to inspect.';
+    return { kpiType, filtered: mRows, excludedCount, note };
+  }
+
   /* Quality / WH / Doc — non-shipment KPIs, manual-only */
   if (kn.includes('quality') || kn.includes('wh capacity') || kn.includes('capacity') || kn.includes('doc issue') || kn.includes('packaging') || kn.includes('label')) {
     kpiType = 'manual';
@@ -496,6 +631,24 @@ export default function OKR() {
       .then(json => { if (!cancelled) setGrnRaw(Array.isArray(json) ? json : (json.data || [])); })
       .catch(() => { /* silent fail — KPIs fall back to manual */ });
     return () => { cancelled = true; };
+  }, []);
+
+  /* ─── Anoop daily uploads (CSV-driven) — persisted in localStorage ───
+     Schema: array of { date: 'YYYY-MM-DD', _d: Date, <kpi_id>: number, ... } */
+  const [anoopDaily, setAnoopDaily] = useState(() => {
+    try {
+      const raw = localStorage.getItem('anoop-daily-v1');
+      if (!raw) return [];
+      const parsed = JSON.parse(raw) || [];
+      /* Re-hydrate _d Date objects */
+      return parsed.map(r => ({ ...r, _d: parseISODate(r.date) })).filter(r => r._d);
+    } catch { return []; }
+  });
+  const saveAnoopDaily = useCallback((rows) => {
+    /* Strip _d before persisting (Date can't serialize); keep date string */
+    const lean = rows.map(({ _d, ...rest }) => rest);
+    localStorage.setItem('anoop-daily-v1', JSON.stringify(lean));
+    setAnoopDaily(rows);
   }, []);
 
   /* ─── Live Filflo orders — used for GRN Ageing (delivery date → month-end days) ─── */
@@ -696,6 +849,13 @@ export default function OKR() {
     return computeGRNMetrics(scopedRows, refDate);
   }, [grnRaw, kpiMonth]);
 
+  /* ═══ Anoop daily aggregate scoped to kpiMonth (rolling 30d / month / quarter / fy) ═══ */
+  const anoopAgg = useMemo(() => {
+    const refDate = new Date();
+    const scoped = filterAnoopDailyByScope(anoopDaily, kpiMonth === 'rolling' ? 'rolling30' : kpiMonth, refDate);
+    return aggregateAnoopDaily(scoped);
+  }, [anoopDaily, kpiMonth]);
+
   /* ═══ KPI definitions per owner ═══ */
   const kpis = useMemo(() => {
     const a = actuals;
@@ -770,44 +930,22 @@ export default function OKR() {
           src: g.platformPct != null ? 'auto' : 'manual', n: g.n,
           basis: g.platformPct != null ? 'Average of per-platform GRN% (Σ GRN ÷ Σ Dispatched per Order Type)' : 'GRN data unavailable — enter manually' },
       ],
-      anoop: [
-        { name: 'Dispatch Plan Compliance', w: 30, actual: a.dispatchPlanPct, target: 90, base: 80, high: 95, exc: 98, unit: '%',
-          src: a.dispatchPlanPct != null ? 'auto' : 'manual', n: a.dispatchedCount,
-          basis: a.dispatchPlanPct != null
-            ? '% of dispatched orders dispatched within 2 days of booking — rolls up "Plan vs Report" across Amazon/Gracious/Omkara/Skylark/Rajesh/Shree Krishna/Sudiksha/Godara/Vani'
-            : 'No dispatch data in shipment dataset' },
-        { name: 'Courier Dispatch Coverage', w: 20, actual: a.dispatchCoveragePct, target: 98, base: 95, high: 99, exc: 100, unit: '%',
-          src: a.dispatchCoveragePct != null ? 'auto' : 'manual', n: a.bookedCount,
-          basis: a.dispatchCoveragePct != null
-            ? `Σ(dispatched) ÷ Σ(booked) × 100 — aggregate Vehicle Plan vs Vehicle Placed / Vehicle Capacity vs Load · ${a.dispatchedCount.toLocaleString('en-IN')} dispatched of ${a.bookedCount.toLocaleString('en-IN')} booked`
-            : 'No booking data' },
-        { name: 'Dispatch Ageing — Fresh', w: 20, actual: a.dispatchAgeFreshPct, target: 85, base: 70, high: 90, exc: 95, unit: '%',
-          src: a.dispatchAgeFreshPct != null ? 'auto' : 'manual', n: a.dispatchedCount,
-          basis: a.dispatchAgeFreshPct != null
-            ? '% of dispatched orders aged 0-2 days from booking — Dispatch Ageing Breakdown rolled up'
-            : 'No dispatch data',
-          sub: a.dispatchAgePcts ? [
-            { label: '0-2 Days',  value: a.dispatchAgePcts['0-2'],  target: 85, good: true },
-            { label: '2-5 Days',  value: a.dispatchAgePcts['2-5'],  target: 10, good: false },
-            { label: '5-10 Days', value: a.dispatchAgePcts['5-10'], target: 3,  good: false },
-            { label: '10-20 Days',value: a.dispatchAgePcts['10-20'],target: 1,  good: false },
-            { label: '20+ Days',  value: a.dispatchAgePcts['20+'],  target: 0,  good: false },
-          ] : undefined },
-        { name: 'Proof of Dispatch', w: 15, actual: a.proofOfDispatchPct, target: 95, base: 90, high: 98, exc: 100, unit: '%',
-          src: a.proofOfDispatchPct != null ? 'auto' : 'manual', n: a.dispatchedCount,
-          basis: a.proofOfDispatchPct != null
-            ? '% of dispatched orders with valid AWB number populated — proxy for Overall Proof of Dispatch (inverse of POD miss % and wrong e-way bill rate)'
-            : 'No dispatch data' },
-        { name: 'Appointment Coverage', w: 15, actual: a.apptCoveragePct, target: 90, base: 80, high: 95, exc: 100, unit: '%',
-          src: a.apptCoveragePct != null ? 'auto' : 'manual', n: a.apptDenom,
-          basis: a.apptCoveragePct != null
-            ? `In-transit orders with appointment booked ÷ total in-transit · Zepto-specific: ${a.zeptoApptPct != null ? a.zeptoApptPct.toFixed(1) + '% of ' + a.zeptoIntransitCount + ' Zepto' : 'n/a'}`
-            : 'No in-transit data',
-          sub: [
-            { label: 'Overall Appt %', value: a.apptCoveragePct, target: 90, good: true },
-            { label: 'Zepto Appt %', value: a.zeptoApptPct, target: 90, good: true, n: a.zeptoIntransitCount },
-          ] },
-      ],
+      anoop: ANOOP_DAILY_KPIS.map(k => {
+        const v = anoopAgg[k.id];
+        const n = anoopAgg[`${k.id}_n`] || 0;
+        return {
+          name: k.name,
+          w: k.w,
+          actual: (v != null && isFinite(v)) ? v : null,
+          target: k.target, base: k.base, high: k.high, exc: k.exc,
+          unit: k.unit, inv: k.inv,
+          src: (v != null && isFinite(v)) ? 'auto' : 'manual',
+          n,
+          basis: (v != null && isFinite(v))
+            ? `${k.area} · daily-CSV avg of ${n} day${n === 1 ? '' : 's'} in scope (${kpiMonth === 'rolling' ? 'rolling 30d' : kpiMonth})`
+            : `${k.area} · no daily values uploaded for this scope yet — use the Upload CSV button in Monthly Tracking`,
+        };
+      }),
     };
     /* Build the full all-owners list once; either return it or slice to current owner */
     const allKpisTagged = [];
@@ -817,7 +955,7 @@ export default function OKR() {
     });
     if (owner === 'all') return allKpisTagged;
     return defs[owner] || [];
-  }, [actuals, owner, grnScoped, filfloAgeingScoped]);
+  }, [actuals, owner, grnScoped, filfloAgeingScoped, anoopAgg]);
 
   /* Full all-owners KPI list — used by 'Lock All' so the action freezes every owner's
      values regardless of which owner tab is currently visible. */
@@ -845,13 +983,7 @@ export default function OKR() {
       { name: 'POD Ageing', target: 90 }, { name: 'GRN Ageing', target: 96 },
       { name: 'Platform GRN', target: 99 },
     ]);
-    def('anoop', [
-      { name: 'Dispatch Plan Compliance', target: 90 },
-      { name: 'Courier Dispatch Coverage', target: 98 },
-      { name: 'Dispatch Ageing — Fresh', target: 85 },
-      { name: 'Proof of Dispatch', target: 95 },
-      { name: 'Appointment Coverage', target: 90 },
-    ]);
+    def('anoop', ANOOP_DAILY_KPIS.map(k => ({ name: k.name, target: k.target })));
     return list;
   }, [actuals, grnScoped]);
 
@@ -1534,36 +1666,14 @@ export default function OKR() {
             const fa = computeFilfloAgeing(monthFilflo, isCurrentMonth ? now : monthEnd);
             if (fa.ageingPct != null) autoActuals[m]['GRN Ageing'] = fa.ageingPct;
           }
-          /* ─── Anoop's First-Mile / Dispatch KPIs — shipment-level fields rolled up monthly.
-             Uses awbNo presence as the "dispatched" signal (no separate dispatchDate column). */
-          const hasAwbM = (r) => r.awbNo && String(r.awbNo).trim() !== '' && String(r.awbNo).trim() !== '-';
-          const isPendingM = (s) => {
-            const v = String(s || '').toLowerCase().trim();
-            return v === '' || v === 'booked' || v === 'pending' || v.includes('not picked') || v.includes('pickup pending');
-          };
-          const bookedM = rows.filter(r => safeParseDate(r.bookingDate));
-          const dispatchedM = bookedM.filter(hasAwbM);
-          const bookedCount = bookedM.length;
-          const dispCount = dispatchedM.length;
-          if (bookedCount > 0) {
-            autoActuals[m]['Courier Dispatch Coverage'] = parseFloat(percent(dispCount, bookedCount).toFixed(1));
-            const inMotionM = bookedM.filter(r => !isPendingM(r.status));
-            autoActuals[m]['Dispatch Plan Compliance'] = parseFloat(percent(inMotionM.length, bookedCount).toFixed(1));
-          }
-          if (dispCount > 0) {
-            /* Fresh = booked within 0-2 days of monthEnd (for past months) or today (current) */
-            const fast = dispatchedM.filter(r => {
-              const bd = safeParseDate(r.bookingDate);
-              return bd && Math.floor((refDate - bd) / 86400000) <= 2;
-            }).length;
-            autoActuals[m]['Dispatch Ageing — Fresh'] = parseFloat(percent(fast, dispCount).toFixed(1));
-            const okPod = dispatchedM.filter(r => !isLost(r.status)).length;
-            autoActuals[m]['Proof of Dispatch'] = parseFloat(percent(okPod, dispCount).toFixed(1));
-          }
-          const intM = rows.filter(r => isInTransit(r.status) || isOFD(r.status));
-          if (intM.length > 0) {
-            const withAppt = intM.filter(r => safeParseDate(r.appointmentDate)).length;
-            autoActuals[m]['Appointment Coverage'] = parseFloat(percent(withAppt, intM.length).toFixed(1));
+          /* ─── Anoop's 9 KPIs — daily CSV uploads aggregated to month ─── */
+          const anoopMonthRows = filterAnoopDailyByScope(anoopDaily, m, isCurrentMonth ? now : monthEnd);
+          if (anoopMonthRows.length > 0) {
+            const agg = aggregateAnoopDaily(anoopMonthRows);
+            ANOOP_DAILY_KPIS.forEach(k => {
+              const v = agg[k.id];
+              if (v != null && isFinite(v)) autoActuals[m][k.name] = parseFloat(v.toFixed(2));
+            });
           }
           /* NOTE: Doc Issues %, Dispatch & Pickup, Quality Control, WH Capacity Utilization remain MANUAL
              (no shipment / GRN source). Filled by user in Monthly Tracking cells. */
@@ -1642,8 +1752,122 @@ export default function OKR() {
           }).length;
         }, 0);
 
+        /* ── Anoop daily upload helpers (download template / upload CSV) ── */
+        const downloadAnoopTemplate = () => {
+          const today = new Date();
+          const sampleRows = [];
+          for (let i = 6; i >= 0; i--) {
+            const d = new Date(today); d.setDate(d.getDate() - i);
+            const r = { date: isoStr(d), _d: d };
+            ANOOP_DAILY_KPIS.forEach(k => { r[k.id] = ''; });
+            sampleRows.push(r);
+          }
+          const csv = anoopRowsToCSV(sampleRows);
+          const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a'); a.href = url; a.download = `anoop-daily-template-${isoStr(today)}.csv`;
+          document.body.appendChild(a); a.click(); document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        };
+        const downloadAnoopExport = () => {
+          if (anoopDaily.length === 0) { alert('No daily data uploaded yet.'); return; }
+          const csv = anoopRowsToCSV([...anoopDaily].sort((a, b) => a.date.localeCompare(b.date)));
+          const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a'); a.href = url; a.download = `anoop-daily-export-${isoStr(new Date())}.csv`;
+          document.body.appendChild(a); a.click(); document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        };
+        const handleAnoopUpload = (e) => {
+          const file = e.target.files?.[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = (ev) => {
+            const { rows, errors } = parseAnoopCSV(String(ev.target?.result || ''));
+            if (rows.length === 0) { alert('No valid rows parsed.\n\n' + errors.slice(0, 5).join('\n')); return; }
+            /* Merge with existing — new date overwrites old */
+            const byDate = {};
+            anoopDaily.forEach(r => { byDate[r.date] = r; });
+            rows.forEach(r => { byDate[r.date] = { ...(byDate[r.date] || {}), ...r }; });
+            const merged = Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date));
+            saveAnoopDaily(merged);
+            const msg = `Uploaded ${rows.length} day${rows.length === 1 ? '' : 's'} of Anoop KPI data. Total stored: ${merged.length} day${merged.length === 1 ? '' : 's'}.`
+              + (errors.length ? `\n\n${errors.length} warning${errors.length === 1 ? '' : 's'}:\n${errors.slice(0, 5).join('\n')}` : '');
+            alert(msg);
+            e.target.value = '';
+          };
+          reader.readAsText(file);
+        };
+        const clearAnoopDaily = () => {
+          if (!confirm(`Clear all ${anoopDaily.length} day${anoopDaily.length === 1 ? '' : 's'} of Anoop daily data? This cannot be undone.`)) return;
+          saveAnoopDaily([]);
+        };
+
         return (
         <div className="space-y-4">
+        {/* ─── Anoop daily CSV upload panel (shown only when Anoop tab is active) ─── */}
+        {owner === 'anoop' && (
+          <div className="bg-gradient-to-br from-purple-50 to-indigo-50 border border-indigo-200 rounded-xl p-4">
+            <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
+              <div>
+                <h3 className="text-sm font-bold text-indigo-900 flex items-center gap-2"><Package className="w-4 h-4" /> Anoop Daily KPI Upload</h3>
+                <p className="text-[11px] text-gray-600 mt-0.5">
+                  9 KPIs (Vehicle Plan vs Placed, Dispatch Plan vs Handover, Floor Held, Dock Utilize, Vehicle Halting, POD Miss, Zepto Appt, Doc Error, EasyEcom PO) ·
+                  Upload one row per day · Auto-aggregates to month / quarter / year.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button onClick={downloadAnoopTemplate} className="text-[10px] px-3 py-1.5 bg-white hover:bg-gray-50 border border-gray-300 text-gray-700 rounded-lg font-semibold flex items-center gap-1">
+                  <FileText className="w-3 h-3" /> Download Template
+                </button>
+                <label className="text-[10px] px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-semibold flex items-center gap-1 cursor-pointer">
+                  <ChevronDown className="w-3 h-3" /> Upload CSV
+                  <input type="file" accept=".csv,text/csv" onChange={handleAnoopUpload} className="hidden" />
+                </label>
+                {anoopDaily.length > 0 && (
+                  <>
+                    <button onClick={downloadAnoopExport} className="text-[10px] px-3 py-1.5 bg-white hover:bg-gray-50 border border-gray-300 text-gray-700 rounded-lg font-semibold flex items-center gap-1">
+                      <FileText className="w-3 h-3" /> Export All
+                    </button>
+                    <button onClick={clearAnoopDaily} className="text-[10px] px-3 py-1.5 bg-white hover:bg-red-50 border border-red-200 text-red-600 rounded-lg font-semibold flex items-center gap-1">
+                      <X className="w-3 h-3" /> Clear
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+            {anoopDaily.length > 0 ? (
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-[10px]">
+                <div className="bg-white rounded-lg p-2 border border-indigo-100">
+                  <p className="text-[9px] uppercase text-gray-500 font-semibold">Days uploaded</p>
+                  <p className="text-lg font-bold text-indigo-700">{anoopDaily.length}</p>
+                </div>
+                <div className="bg-white rounded-lg p-2 border border-indigo-100">
+                  <p className="text-[9px] uppercase text-gray-500 font-semibold">First date</p>
+                  <p className="text-sm font-bold text-gray-700">{anoopDaily[0]?.date}</p>
+                </div>
+                <div className="bg-white rounded-lg p-2 border border-indigo-100">
+                  <p className="text-[9px] uppercase text-gray-500 font-semibold">Last date</p>
+                  <p className="text-sm font-bold text-gray-700">{anoopDaily[anoopDaily.length - 1]?.date}</p>
+                </div>
+                <div className="bg-white rounded-lg p-2 border border-indigo-100">
+                  <p className="text-[9px] uppercase text-gray-500 font-semibold">In current scope</p>
+                  <p className="text-lg font-bold text-emerald-700">{anoopAgg._n || 0}</p>
+                  <p className="text-[8px] text-gray-400">{kpiMonth === 'rolling' ? 'last 30d' : kpiMonth}</p>
+                </div>
+                <div className="bg-white rounded-lg p-2 border border-indigo-100">
+                  <p className="text-[9px] uppercase text-gray-500 font-semibold">KPIs computed</p>
+                  <p className="text-lg font-bold text-blue-700">{ANOOP_DAILY_KPIS.filter(k => anoopAgg[k.id] != null).length}/9</p>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-white/60 border border-dashed border-indigo-200 rounded-lg p-3 text-center text-[11px] text-gray-600">
+                No daily data uploaded yet. <strong>Click Download Template</strong> → fill values → <strong>Upload CSV</strong>. The 9 KPI cells in Monthly Tracking will auto-populate.
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
             <div>
@@ -2153,6 +2377,7 @@ export default function OKR() {
           now={now}
           grnRaw={grnRaw}
           filfloOrders={filfloOrders}
+          anoopDaily={anoopDaily}
         />
       )}
     </div>
@@ -2164,7 +2389,7 @@ export default function OKR() {
    Only the metrics, charts & columns relevant to the clicked KPI are shown.
    Drill-deeper: click a Platform / Courier / Zone chip to filter in place.
    ═══════════════════════════════════════════════════════════════════════════ */
-function TrackDrillModal({ trackDrill, onClose, setTrackDrill, now, grnRaw = [], filfloOrders = [] }) {
+function TrackDrillModal({ trackDrill, onClose, setTrackDrill, now, grnRaw = [], filfloOrders = [], anoopDaily = [] }) {
   const kpiType = trackDrill.kpiType || 'general';
   const [scope, setScope] = useState({ platform: null, vendor: null, zone: null });
   const [tab, setTab] = useState('summary'); // summary | breakdown | outliers | raw
@@ -2267,6 +2492,33 @@ function TrackDrillModal({ trackDrill, onClose, setTrackDrill, now, grnRaw = [],
   const isPod      = kpiType === 'pod';
   const isAppt     = kpiType === 'appt';
   const isGrn      = kpiType === 'grn';
+  const isAnoopDaily = kpiType === 'anoop_daily';
+  /* Anoop daily — match KPI name to its definition + extract its daily series for the scope */
+  const anoopKpiDef = isAnoopDaily ? ANOOP_DAILY_KPIS.find(k => k.name === trackDrill.kpiName) : null;
+  const anoopScopedRows = useMemo(() => {
+    if (!isAnoopDaily) return [];
+    /* Rehydrate _d for date filtering */
+    const rows = (anoopDaily || []).map(r => ({ ...r, _d: r._d || parseISODate(r.date) })).filter(r => r._d);
+    return filterAnoopDailyByScope(rows, trackDrill.month || 'rolling30', new Date());
+  }, [isAnoopDaily, anoopDaily, trackDrill.month]);
+  const anoopKpiValues = useMemo(() => {
+    if (!isAnoopDaily || !anoopKpiDef) return [];
+    return anoopScopedRows
+      .map(r => ({ date: r.date, value: r[anoopKpiDef.id] }))
+      .filter(x => x.value != null && isFinite(x.value))
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }, [isAnoopDaily, anoopKpiDef, anoopScopedRows]);
+  const anoopKpiStats = useMemo(() => {
+    if (anoopKpiValues.length === 0) return null;
+    const vals = anoopKpiValues.map(x => x.value);
+    const sum = vals.reduce((a, b) => a + b, 0);
+    const avg = sum / vals.length;
+    const min = Math.min(...vals), max = Math.max(...vals);
+    const t = anoopKpiDef.target;
+    const onTarget = vals.filter(v => anoopKpiDef.inv ? v <= t : v >= t).length;
+    const onTargetPct = (onTarget / vals.length) * 100;
+    return { avg, min, max, count: vals.length, target: t, onTarget, onTargetPct, latest: vals[vals.length - 1], unit: anoopKpiDef.unit };
+  }, [anoopKpiValues, anoopKpiDef]);
   const isDispatch = kpiType === 'dispatch';
   const isManual   = kpiType === 'manual';
   const isAgingType = isTransit || isRtoAging;
@@ -2486,7 +2738,7 @@ function TrackDrillModal({ trackDrill, onClose, setTrackDrill, now, grnRaw = [],
             ...(isCost ? [{ k: 'outliers', l: 'Cost Outliers' }] : []),
             ...((isRto || isRtoAging) ? [{ k: 'reasons', l: 'RTO Reasons' }] : []),
             ...(isAgingType ? [{ k: 'aging', l: isRtoAging ? 'Oldest RTOs' : 'Aging List' }] : []),
-            { k: 'raw', l: `Raw Data (${kpiType === 'grn' ? (isAgeingKPI ? (filfloAgeingData?.ageingRows?.length || 0) : grnRows.length) : dd.length})` },
+            { k: 'raw', l: `Raw Data (${isAnoopDaily ? anoopKpiValues.length : (kpiType === 'grn' ? (isAgeingKPI ? (filfloAgeingData?.ageingRows?.length || 0) : grnRows.length) : dd.length)})` },
           ].map(t => (
             <button key={t.k} onClick={() => setTab(t.k)}
               className={`px-3 py-1.5 text-[10px] font-semibold rounded-t-md transition-colors ${tab === t.k ? tabActiveCls : 'text-gray-500 hover:text-gray-700'}`}>
@@ -2637,6 +2889,58 @@ function TrackDrillModal({ trackDrill, onClose, setTrackDrill, now, grnRaw = [],
               </div>
             </>)}
 
+            {/* ── ANOOP DAILY KPI — Summary tab ── */}
+            {isAnoopDaily && anoopKpiDef && (
+              <div className="space-y-3">
+                <div className="bg-gradient-to-br from-purple-50 to-indigo-50 border border-indigo-200 rounded-xl p-4">
+                  <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                    <div>
+                      <p className="text-[10px] uppercase tracking-wider text-indigo-600 font-semibold">{anoopKpiDef.area}</p>
+                      <p className="text-[15px] font-bold text-indigo-900">{anoopKpiDef.name}</p>
+                    </div>
+                    <span className="text-[9px] text-gray-500 font-mono">scope: {trackDrill.month || 'rolling 30d'} · {anoopKpiValues.length} day{anoopKpiValues.length === 1 ? '' : 's'} with data</span>
+                  </div>
+                  {anoopKpiStats ? (
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                      <div><p className="text-[9px] text-gray-500">Latest</p><p className="text-2xl font-bold text-indigo-700">{anoopKpiStats.latest.toFixed(2)}{anoopKpiStats.unit}</p></div>
+                      <div><p className="text-[9px] text-gray-500">Average</p><p className="text-2xl font-bold text-emerald-700">{anoopKpiStats.avg.toFixed(2)}{anoopKpiStats.unit}</p></div>
+                      <div><p className="text-[9px] text-gray-500">Best</p><p className="text-xl font-bold text-emerald-700">{(anoopKpiDef.inv ? anoopKpiStats.min : anoopKpiStats.max).toFixed(2)}{anoopKpiStats.unit}</p></div>
+                      <div><p className="text-[9px] text-gray-500">Worst</p><p className="text-xl font-bold text-red-700">{(anoopKpiDef.inv ? anoopKpiStats.max : anoopKpiStats.min).toFixed(2)}{anoopKpiStats.unit}</p></div>
+                      <div><p className="text-[9px] text-gray-500">Days on target</p><p className="text-xl font-bold text-blue-700">{anoopKpiStats.onTarget}/{anoopKpiStats.count} <span className="text-[10px] text-gray-500">({anoopKpiStats.onTargetPct.toFixed(0)}%)</span></p><p className="text-[8px] text-gray-400">target {anoopKpiDef.inv ? '≤' : '≥'} {anoopKpiDef.target}{anoopKpiDef.unit}</p></div>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-gray-600">No daily values uploaded for this scope yet.</p>
+                  )}
+                </div>
+                {/* Daily trend bar chart */}
+                {anoopKpiValues.length > 0 && (
+                  <div className="bg-white border border-indigo-100 rounded-xl p-3">
+                    <p className="text-[10px] font-bold text-indigo-700 uppercase mb-2 flex items-center gap-1"><TrendingUp className="w-3 h-3" /> Daily Trend ({anoopKpiValues.length} days)</p>
+                    <div className="space-y-0.5">
+                      {anoopKpiValues.map((d, i) => {
+                        const t = anoopKpiDef.target;
+                        const onT = anoopKpiDef.inv ? d.value <= t : d.value >= t;
+                        const maxRef = Math.max(t * 1.1, ...anoopKpiValues.map(x => x.value));
+                        const w = (d.value / maxRef) * 100;
+                        return (
+                          <div key={i} className="flex items-center gap-2 text-[10px]">
+                            <span className="w-20 text-gray-500 font-mono">{d.date}</span>
+                            <div className="flex-1 h-4 bg-gray-50 rounded relative overflow-hidden">
+                              <div className="h-full rounded transition-all" style={{ width: `${Math.min(100, w)}%`, background: onT ? '#10b981' : '#ef4444', opacity: 0.85 }} />
+                              <span className="absolute inset-0 flex items-center px-2 text-[9px] font-bold" style={{ color: w > 50 ? 'white' : '#1f2937' }}>{d.value.toFixed(2)}{anoopKpiDef.unit}</span>
+                              {/* Target reference line */}
+                              <span className="absolute top-0 bottom-0 w-px bg-blue-500" style={{ left: `${Math.min(100, (t / maxRef) * 100)}%` }} />
+                            </div>
+                            <span className="w-12 text-right" style={{ color: onT ? '#059669' : '#dc2626' }}>{onT ? '✓' : '✗'}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="text-[9px] text-gray-400 mt-2 italic">Blue line = target ({anoopKpiDef.inv ? '≤' : '≥'} {anoopKpiDef.target}{anoopKpiDef.unit}). Green bars meet target, red bars miss.</p>
+                  </div>
+                )}
+              </div>
+            )}
             {isGrn && isAgeingKPI && filfloAgeingData && (
               <div className="space-y-3">
                 <div className="bg-gradient-to-br from-orange-50 to-amber-50 border border-orange-100 rounded-xl p-4">
@@ -2803,7 +3107,99 @@ function TrackDrillModal({ trackDrill, onClose, setTrackDrill, now, grnRaw = [],
           </>)}
 
           {/* ─── BREAKDOWN TAB ─── */}
-          {tab === 'breakdown' && !isGrn && (
+          {tab === 'breakdown' && isAnoopDaily && anoopKpiDef && anoopKpiValues.length > 0 && (() => {
+            /* Bucket the daily values into performance bands relative to target */
+            const t = anoopKpiDef.target;
+            const buckets = [
+              { label: anoopKpiDef.inv ? `≤ exceptional (${anoopKpiDef.exc}${anoopKpiDef.unit})` : `≥ exceptional (${anoopKpiDef.exc}${anoopKpiDef.unit})`, color: '#059669', count: 0, days: [] },
+              { label: anoopKpiDef.inv ? `≤ high (${anoopKpiDef.high}${anoopKpiDef.unit})` : `≥ high (${anoopKpiDef.high}${anoopKpiDef.unit})`, color: '#10b981', count: 0, days: [] },
+              { label: anoopKpiDef.inv ? `≤ target (${t}${anoopKpiDef.unit})` : `≥ target (${t}${anoopKpiDef.unit})`, color: '#3b82f6', count: 0, days: [] },
+              { label: anoopKpiDef.inv ? `≤ base (${anoopKpiDef.base}${anoopKpiDef.unit})` : `≥ base (${anoopKpiDef.base}${anoopKpiDef.unit})`, color: '#f59e0b', count: 0, days: [] },
+              { label: 'Below base', color: '#dc2626', count: 0, days: [] },
+            ];
+            anoopKpiValues.forEach(d => {
+              const v = d.value;
+              if (anoopKpiDef.inv) {
+                if (v <= anoopKpiDef.exc) { buckets[0].count++; buckets[0].days.push(d); }
+                else if (v <= anoopKpiDef.high) { buckets[1].count++; buckets[1].days.push(d); }
+                else if (v <= t) { buckets[2].count++; buckets[2].days.push(d); }
+                else if (v <= anoopKpiDef.base) { buckets[3].count++; buckets[3].days.push(d); }
+                else { buckets[4].count++; buckets[4].days.push(d); }
+              } else {
+                if (v >= anoopKpiDef.exc) { buckets[0].count++; buckets[0].days.push(d); }
+                else if (v >= anoopKpiDef.high) { buckets[1].count++; buckets[1].days.push(d); }
+                else if (v >= t) { buckets[2].count++; buckets[2].days.push(d); }
+                else if (v >= anoopKpiDef.base) { buckets[3].count++; buckets[3].days.push(d); }
+                else { buckets[4].count++; buckets[4].days.push(d); }
+              }
+            });
+            const total = anoopKpiValues.length;
+            /* Week-of-month aggregation */
+            const byWeek = {};
+            anoopKpiValues.forEach(d => {
+              const dt = parseISODate(d.date); if (!dt) return;
+              const wk = `Week ${Math.ceil(dt.getDate() / 7)} (${monthLabel(dt)})`;
+              if (!byWeek[wk]) byWeek[wk] = [];
+              byWeek[wk].push(d.value);
+            });
+            const weekRows = Object.entries(byWeek).map(([wk, vals]) => ({
+              week: wk,
+              count: vals.length,
+              avg: vals.reduce((a, b) => a + b, 0) / vals.length,
+              best: anoopKpiDef.inv ? Math.min(...vals) : Math.max(...vals),
+              worst: anoopKpiDef.inv ? Math.max(...vals) : Math.min(...vals),
+            }));
+            return (
+              <div className="space-y-3">
+                <div className="bg-white border border-indigo-100 rounded-xl p-3">
+                  <p className="text-[10px] font-bold text-indigo-700 uppercase mb-2 flex items-center gap-1"><BarChart3 className="w-3 h-3" /> Performance Bucket Distribution</p>
+                  <div className="space-y-1">
+                    {buckets.map((b, i) => {
+                      const w = (b.count / total) * 100;
+                      return (
+                        <div key={i} className="flex items-center gap-2 text-[10px]">
+                          <span className="w-48 text-gray-700 font-semibold truncate">{b.label}</span>
+                          <div className="flex-1 h-4 bg-gray-50 rounded overflow-hidden">
+                            <div className="h-full rounded transition-all flex items-center px-2 text-[9px] font-bold text-white" style={{ width: `${w}%`, background: b.color }}>{b.count > 0 ? `${b.count} day${b.count === 1 ? '' : 's'}` : ''}</div>
+                          </div>
+                          <span className="w-12 text-right text-gray-600 font-mono">{w.toFixed(0)}%</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="bg-white border border-indigo-100 rounded-xl p-3 overflow-x-auto">
+                  <p className="text-[10px] font-bold text-indigo-700 uppercase mb-2"><Calendar className="w-3 h-3 inline mr-1" /> Week-wise Aggregate</p>
+                  <table className="w-full text-[10px]">
+                    <thead><tr className="bg-indigo-50 border-b border-indigo-200">
+                      <th className="px-2 py-1 text-left font-semibold text-indigo-700">Week</th>
+                      <th className="px-2 py-1 text-right font-semibold text-gray-600">Days</th>
+                      <th className="px-2 py-1 text-right font-semibold text-emerald-700">Average</th>
+                      <th className="px-2 py-1 text-right font-semibold text-emerald-700">Best</th>
+                      <th className="px-2 py-1 text-right font-semibold text-red-700">Worst</th>
+                      <th className="px-2 py-1 text-center font-semibold text-blue-700">Status</th>
+                    </tr></thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {weekRows.map((r, i) => {
+                        const onT = anoopKpiDef.inv ? r.avg <= t : r.avg >= t;
+                        return (
+                          <tr key={i} className={onT ? 'hover:bg-emerald-50/30' : 'hover:bg-red-50/30'}>
+                            <td className="px-2 py-1 text-gray-800 font-medium">{r.week}</td>
+                            <td className="px-2 py-1 text-right text-gray-600">{r.count}</td>
+                            <td className="px-2 py-1 text-right font-mono font-bold" style={{ color: onT ? '#059669' : '#dc2626' }}>{r.avg.toFixed(2)}{anoopKpiDef.unit}</td>
+                            <td className="px-2 py-1 text-right font-mono text-emerald-600">{r.best.toFixed(2)}{anoopKpiDef.unit}</td>
+                            <td className="px-2 py-1 text-right font-mono text-red-600">{r.worst.toFixed(2)}{anoopKpiDef.unit}</td>
+                            <td className="px-2 py-1 text-center">{onT ? <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-bold">ON TARGET</span> : <span className="text-[9px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-bold">MISS</span>}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })()}
+          {tab === 'breakdown' && !isGrn && !isAnoopDaily && (
             <DimensionGrid
               isCost={isCost} isRto={isRto || isRtoAging} isDel={isDel || isTransit || isPod || isAppt || isDispatch || isManual || kpiType === 'general'}
               platArr={platArr} courArr={courArr} zoneArr={zoneArr}
@@ -3007,7 +3403,21 @@ function TrackDrillModal({ trackDrill, onClose, setTrackDrill, now, grnRaw = [],
           )}
 
           {/* ─── RAW DATA TAB ─── */}
-          {tab === 'raw' && !isGrn && (
+          {tab === 'raw' && isAnoopDaily && anoopKpiDef && (
+            <DataTable
+              data={anoopKpiValues}
+              columns={[
+                { key: 'date', label: 'Date' },
+                { key: 'value', label: anoopKpiDef.name, render: v => v == null ? '-' : `${v.toFixed(2)}${anoopKpiDef.unit}` },
+                { key: '_target', label: 'Target', render: (_, r) => `${anoopKpiDef.inv ? '≤' : '≥'} ${anoopKpiDef.target}${anoopKpiDef.unit}` },
+                { key: '_status', label: 'Status', render: (_, r) => { const ok = anoopKpiDef.inv ? r.value <= anoopKpiDef.target : r.value >= anoopKpiDef.target; return ok ? '✓ Met' : '✗ Miss'; } },
+                { key: '_gap', label: 'Gap', render: (_, r) => { const g = anoopKpiDef.inv ? r.value - anoopKpiDef.target : anoopKpiDef.target - r.value; return g <= 0 ? '0.00' : `${anoopKpiDef.inv ? '+' : '-'}${g.toFixed(2)}${anoopKpiDef.unit}`; } },
+              ]}
+              exportFilename={`anoop-${(anoopKpiDef.id || 'kpi')}-${trackDrill.month || 'rolling'}`}
+              pageSize={31}
+            />
+          )}
+          {tab === 'raw' && !isGrn && !isAnoopDaily && (
             <DataTable data={dd} columns={cols} exportFilename={`${kpiType}-${trackDrill.month || 'drill'}${hasScope ? '-scoped' : ''}`} pageSize={25} />
           )}
           {tab === 'raw' && isGrn && isAgeingKPI && filfloAgeingData && (
